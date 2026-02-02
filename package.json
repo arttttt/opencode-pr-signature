@@ -1,8 +1,8 @@
 {
   "name": "opencode-pr-signature",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "type": "module",
-  "description": "OpenCode plugin for automatically adding AI model signature to Pull Requests and Issues",
+  "description": "OpenCode plugin for automatically adding AI model signature to commits, Pull Requests, and Issues",
   "author": "arttttt <artembambalov1993@gmail.com>",
   "license": "Apache-2.0",
   "repository": {
