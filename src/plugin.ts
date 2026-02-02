@@ -112,6 +112,12 @@ export const PRSignaturePlugin: Plugin = async ({ client }) => {
     "MCP_DOCKER_update_issue",
   ];
 
+  // Git commands that create commits
+  const gitCommitPatterns = [
+    /git\s+commit/i,
+    /git\s+commit\s+-m/i,
+  ];
+
   return {
     /**
      * Hook: chat.message
@@ -126,29 +132,60 @@ export const PRSignaturePlugin: Plugin = async ({ client }) => {
 
     /**
      * Hook: tool.execute.before
-     * Intercept PR and Issue creation/update to add signature
+     * Intercept PR, Issue creation/update, and git commits to add signature
      */
     "tool.execute.before": async (input, output) => {
-      // Check if this is a tool we want to intercept
-      if (!toolsToIntercept.includes(input.tool)) {
+      // Handle GitHub/MCP tools
+      if (toolsToIntercept.includes(input.tool)) {
+        // Generate signature
+        const signature = generateSignature(currentModel);
+
+        // Append signature to body
+        if (output.args?.body) {
+          // Check if signature already exists
+          if (!hasSignature(output.args.body)) {
+            output.args.body = output.args.body.trim() + "\n\n" + signature;
+          }
+        } else {
+          output.args.body = signature;
+        }
+
+        // Log for debugging
+        console.log(`[PRSignature] Added signature for model: ${currentModel}`);
         return;
       }
 
-      // Generate signature
-      const signature = generateSignature(currentModel);
-
-      // Append signature to body
-      if (output.args?.body) {
-        // Check if signature already exists
-        if (!hasSignature(output.args.body)) {
-          output.args.body = output.args.body.trim() + "\n\n" + signature;
+      // Handle git commit commands via bash
+      if (input.tool === "bash" && output.args?.command) {
+        const command = output.args.command;
+        
+        // Check if this is a git commit command
+        const isGitCommit = gitCommitPatterns.some(pattern => pattern.test(command));
+        
+        if (isGitCommit) {
+          // Check if command already has -m flag
+          if (command.includes(' -m ') || command.includes(' --message=')) {
+            // Extract the message and append signature
+            const signature = generateSignature(currentModel);
+            
+            // If command uses -m "message" format
+            if (command.includes(' -m ')) {
+              // Replace the message part
+              output.args.command = command.replace(
+                /-m\s+["']([^"']+)["']/,
+                (match, msg) => {
+                  if (!hasSignature(msg)) {
+                    return `-m "${msg.trim()}\n\n${signature}"`;
+                  }
+                  return match;
+                }
+              );
+            }
+            
+            console.log(`[PRSignature] Added signature to git commit for model: ${currentModel}`);
+          }
         }
-      } else {
-        output.args.body = signature;
       }
-
-      // Log for debugging
-      console.log(`[PRSignature] Added signature for model: ${currentModel}`);
     },
   };
 };
