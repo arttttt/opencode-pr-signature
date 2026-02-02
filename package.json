@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "type": "module",
   "description": "OpenCode plugin for automatically adding AI model signature to Pull Requests and Issues",
-  "author": "arttttt <arttttt@example.com>",
+  "author": "arttttt <artembambalov1993@gmail.com>",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
