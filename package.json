@@ -1,0 +1,38 @@
+{
+  "name": "opencode-pr-signature",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "OpenCode plugin for automatically adding AI model signature to Pull Requests and Issues",
+  "author": "arttttt <arttttt@example.com>",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/arttttt/opencode-pr-signature"
+  },
+  "keywords": [
+    "opencode",
+    "plugin",
+    "github",
+    "pull-request",
+    "issue",
+    "signature",
+    "ai"
+  ],
+  "main": "src/plugin.ts",
+  "files": ["src", "README.md", "LICENSE"],
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.0.143",
+    "@opencode-ai/sdk": "^1.0.143"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "^22.0.0",
+    "typescript": "~5.9.3"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
+  }
+}
