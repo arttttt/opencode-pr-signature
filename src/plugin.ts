@@ -90,14 +90,14 @@ function hasSignature(text: string): boolean {
 }
 
 /**
- * Find the end position of git commit command in a bash command string.
+ * Find the end position of a command in a bash command string.
  * Respects quotes to avoid splitting on && or || inside quoted strings.
  *
  * @param command - The full bash command string
  * @param startIndex - Where to start searching from
- * @returns The index where git commit command ends (before && || ; | or end of string)
+ * @returns The index where command ends (before && || ; | or end of string)
  */
-function findGitCommitEndIndex(command: string, startIndex: number): number {
+function findCommandEndIndex(command: string, startIndex: number): number {
   let inSingleQuote = false;
   let inDoubleQuote = false;
   let i = startIndex;
@@ -130,11 +130,64 @@ function findGitCommitEndIndex(command: string, startIndex: number): number {
 }
 
 /**
- * Escape special characters for use in shell -m argument
+ * Escape special characters for use in shell arguments
  */
 function escapeForShell(text: string): string {
   // Escape double quotes and backslashes
   return text.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+/**
+ * Check if a command is a gh CLI command that needs signature injection.
+ * Supported commands: gh pr create, gh issue create, gh pr comment, gh issue comment, gh pr review
+ */
+function isGhCommandWithBody(command: string): boolean {
+  return /gh\s+(pr|issue)\s+(create|comment|review)\b/i.test(command);
+}
+
+/**
+ * Check if command has --body or -b flag
+ */
+function hasBodyFlag(command: string): boolean {
+  return /\s(--body|-b)\s/.test(command) || /\s(--body|-b)["']/.test(command);
+}
+
+/**
+ * Add signature to gh CLI command.
+ * If --body/-b exists, append signature to its value.
+ * If not, add --body flag with signature.
+ */
+function addSignatureToGhCommand(command: string, signature: string, startIndex: number): string {
+  const escapedSignature = escapeForShell(signature);
+  const endIndex = findCommandEndIndex(command, startIndex);
+
+  const commandPart = command.slice(startIndex, endIndex);
+  const beforeCommand = command.slice(0, startIndex);
+  const afterCommand = command.slice(endIndex);
+
+  if (hasBodyFlag(commandPart)) {
+    // Find and modify existing --body or -b value
+    // Match patterns: --body "text", --body 'text', -b "text", -b 'text'
+    const bodyRegex = /(--body|-b)\s*(["'])([\s\S]*?)\2/;
+    const match = commandPart.match(bodyRegex);
+
+    if (match) {
+      const [fullMatch, flag, quote, content] = match;
+      const newContent = content.trimEnd() + "\\n\\n" + escapedSignature;
+      const newBody = `${flag} ${quote}${newContent}${quote}`;
+      const modifiedPart = commandPart.replace(fullMatch, newBody);
+      return beforeCommand + modifiedPart + afterCommand;
+    }
+
+    // If regex didn't match (e.g., HEREDOC), add as separate flag anyway
+    // gh CLI will use the last --body value
+    const trimmedPart = commandPart.trimEnd();
+    return beforeCommand + trimmedPart + ` --body "${escapedSignature}"` + afterCommand;
+  } else {
+    // No body flag, add one
+    const trimmedPart = commandPart.trimEnd();
+    return beforeCommand + trimmedPart + ` --body "${escapedSignature}"` + afterCommand;
+  }
 }
 
 /**
@@ -191,30 +244,41 @@ export const PRSignaturePlugin: Plugin = async () => {
         return;
       }
 
-      // Handle git commit commands via bash tool
+      // Handle bash commands (git commit, gh CLI)
       if (input.tool === "bash" && output.args?.command) {
         const command: string = output.args.command;
 
-        // Check if this is a git commit command with a message flag
+        // Skip if signature already exists
+        if (hasSignature(command)) {
+          return;
+        }
+
+        const signature = generateSignature(currentModel);
+
+        // Handle git commit commands
         const isGitCommit = /git\s+commit\b/i.test(command);
         const hasMessageFlag = /\s-m\s|\s-m["']|\s--message[=\s]/i.test(command);
 
-        if (isGitCommit && hasMessageFlag && !hasSignature(command)) {
-          const signature = generateSignature(currentModel);
+        if (isGitCommit && hasMessageFlag) {
           const escapedSignature = escapeForShell(signature);
-
-          // Find where "git commit" starts
           const gitCommitMatch = command.match(/git\s+commit\b/i);
-          if (gitCommitMatch && gitCommitMatch.index !== undefined) {
-            // Find where this git commit command ends
-            const endIndex = findGitCommitEndIndex(command, gitCommitMatch.index);
 
-            // Insert additional -m flag with signature before the separator
-            // Git concatenates multiple -m messages with blank lines between them
+          if (gitCommitMatch && gitCommitMatch.index !== undefined) {
+            const endIndex = findCommandEndIndex(command, gitCommitMatch.index);
             const beforeEnd = command.slice(0, endIndex).trimEnd();
             const afterEnd = command.slice(endIndex);
 
             output.args.command = `${beforeEnd} -m "${escapedSignature}"${afterEnd}`;
+          }
+          return;
+        }
+
+        // Handle gh CLI commands (pr create, issue create, pr comment, issue comment, pr review)
+        if (isGhCommandWithBody(command)) {
+          const ghMatch = command.match(/gh\s+(pr|issue)\s+(create|comment|review)\b/i);
+
+          if (ghMatch && ghMatch.index !== undefined) {
+            output.args.command = addSignatureToGhCommand(command, signature, ghMatch.index);
           }
         }
       }
