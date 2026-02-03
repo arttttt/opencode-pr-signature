@@ -2,15 +2,18 @@
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![OpenCode](https://img.shields.io/badge/OpenCode-Plugin-green.svg)](https://opencode.ai)
+[![npm](https://img.shields.io/npm/v/opencode-pr-signature.svg)](https://www.npmjs.com/package/opencode-pr-signature)
 
-Automatically adds AI model signature to Pull Requests and Issues created through OpenCode.
+Automatically adds AI model signature to Pull Requests, Issues, and Commits created through OpenCode.
 
 ## Features
 
 - 🤖 **Automatic Detection** - Dynamically detects the AI model being used (Kimi, Claude, GPT, Gemini, etc.)
-- 📝 **Smart Signature** - Appends signature only to PR/Issue bodies that don't already have it
+- 📝 **Smart Signature** - Appends signature only to content that doesn't already have it
 - 🔄 **Update Support** - Works with both creation and update operations
-- 🎯 **Multiple Tools** - Supports both native GitHub tools and MCP Docker tools
+- 🎯 **Multiple Tools** - Supports GitHub MCP tools, MCP Docker tools, git CLI, and gh CLI
+- 💻 **Git Commits** - Automatically signs commit messages
+- 🔧 **gh CLI** - Supports `gh pr create`, `gh issue create`, comments, and reviews
 
 ## Installation
 
@@ -36,7 +39,9 @@ Add to your OpenCode config (`~/.config/opencode/opencode.json` or project-level
 
 ## Usage
 
-Once installed, the plugin works automatically. When you create or update a Pull Request or Issue through OpenCode, the signature will be appended:
+Once installed, the plugin works automatically. When OpenCode creates a Pull Request, Issue, or Commit, the signature will be appended:
+
+### PR/Issue Example
 
 ```markdown
 Your PR description here...
@@ -44,16 +49,38 @@ Your PR description here...
 🤖 Generated with [OpenCode](https://opencode.ai) (Kimi K2.5)
 ```
 
+### Commit Example
+
+```
+feat: add new feature
+
+🤖 Generated with [OpenCode](https://opencode.ai) (Claude 3.5 Sonnet)
+```
+
 ### Supported Operations
 
+#### GitHub MCP Tools
 - `github_create_pull_request`
 - `github_create_issue`
 - `github_update_pull_request`
 - `github_update_issue`
+
+#### MCP Docker Tools
 - `MCP_DOCKER_create_pull_request`
 - `MCP_DOCKER_create_issue`
 - `MCP_DOCKER_update_pull_request`
 - `MCP_DOCKER_update_issue`
+
+#### Git CLI
+- `git commit -m "message"`
+- `git commit --message="message"`
+
+#### gh CLI (GitHub CLI)
+- `gh pr create`
+- `gh issue create`
+- `gh pr comment`
+- `gh issue comment`
+- `gh pr review`
 
 ### Supported Models
 
@@ -69,8 +96,13 @@ Other models will be displayed with their raw ID formatted nicely.
 ## How It Works
 
 1. **Model Detection**: The plugin listens to chat messages to detect which AI model is currently in use
-2. **Tool Interception**: Using the `tool.execute.before` hook, it intercepts PR/Issue creation and update calls
-3. **Signature Injection**: Before the tool executes, it appends the signature to the body argument
+2. **Tool Interception**: Using the `tool.execute.before` hook, it intercepts:
+   - GitHub MCP tool calls (PR/Issue creation and updates)
+   - Bash commands (`git commit`, `gh pr create`, etc.)
+3. **Signature Injection**: Before the tool executes, it appends the signature:
+   - For MCP tools: modifies the `body` argument
+   - For `git commit`: adds an additional `-m` flag (git concatenates multiple `-m` with blank lines)
+   - For `gh` commands: appends to `--body` or adds new `--body` flag
 4. **Duplicate Prevention**: Checks if signature already exists to avoid duplicates
 
 ## Configuration
