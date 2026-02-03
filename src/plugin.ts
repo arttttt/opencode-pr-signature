@@ -44,19 +44,110 @@ function formatModelString(modelId: string): string {
 
   // Known models - use nice names
   const knownModels: Record<string, string> = {
+    // Kimi models
     kimi: "Kimi",
     "kimi-for-coding": "Kimi",
     k2p5: "K2.5",
+    "kimi-k2": "Kimi K2",
+    "moonshot-v1": "Moonshot",
+
+    // Claude models (Anthropic)
     claude: "Claude",
     "claude-3": "Claude 3",
+    "claude-3-opus": "Claude 3 Opus",
+    "claude-3-sonnet": "Claude 3 Sonnet",
+    "claude-3-haiku": "Claude 3 Haiku",
     "claude-3-5-sonnet": "Claude 3.5 Sonnet",
-    "claude-3-5-sonnet-20241022": "Claude 3.5 Sonnet",
+    "claude-3-5-haiku": "Claude 3.5 Haiku",
+    "claude-sonnet-4": "Claude Sonnet 4",
+    "claude-haiku-4": "Claude Haiku 4",
+    "claude-opus-4": "Claude Opus 4",
+    "claude-sonnet-4-5": "Claude 4.5 Sonnet",
+    "claude-haiku-4-5": "Claude 4.5 Haiku",
+    "claude-opus-4-5": "Claude Opus 4.5",
+
+    // GPT models (OpenAI)
     "gpt-4": "GPT-4",
+    "gpt-4-turbo": "GPT-4 Turbo",
     "gpt-4o": "GPT-4o",
     "gpt-4o-mini": "GPT-4o Mini",
+    "gpt-4-5": "GPT-4.5",
+    "gpt-5": "GPT-5",
+    "gpt-5-mini": "GPT-5 Mini",
+    "gpt-5-nano": "GPT-5 Nano",
+    "o1": "o1",
+    "o1-mini": "o1 Mini",
+    "o1-preview": "o1 Preview",
+    "o3": "o3",
+    "o3-mini": "o3 Mini",
+    "o4-mini": "o4 Mini",
+
+    // Gemini models (Google)
     gemini: "Gemini",
     "gemini-pro": "Gemini Pro",
     "gemini-ultra": "Gemini Ultra",
+    "gemini-1-5-pro": "Gemini 1.5 Pro",
+    "gemini-1-5-flash": "Gemini 1.5 Flash",
+    "gemini-2-0-flash": "Gemini 2.0 Flash",
+    "gemini-2-5-pro": "Gemini 2.5 Pro",
+    "gemini-2-5-flash": "Gemini 2.5 Flash",
+    "gemini-3-pro": "Gemini 3 Pro",
+    "gemini-3-flash": "Gemini 3 Flash",
+
+    // DeepSeek models
+    deepseek: "DeepSeek",
+    "deepseek-chat": "DeepSeek Chat",
+    "deepseek-coder": "DeepSeek Coder",
+    "deepseek-v3": "DeepSeek V3",
+    "deepseek-r1": "DeepSeek R1",
+    "deepseek-r1-lite": "DeepSeek R1 Lite",
+
+    // Llama models (Meta)
+    llama: "Llama",
+    "llama-3": "Llama 3",
+    "llama-3-1": "Llama 3.1",
+    "llama-3-2": "Llama 3.2",
+    "llama-3-3": "Llama 3.3",
+    "llama-4": "Llama 4",
+    "llama-4-maverick": "Llama 4 Maverick",
+    "llama-4-scout": "Llama 4 Scout",
+
+    // Mistral models
+    mistral: "Mistral",
+    "mistral-large": "Mistral Large",
+    "mistral-medium": "Mistral Medium",
+    "mistral-small": "Mistral Small",
+    "mistral-nemo": "Mistral Nemo",
+    codestral: "Codestral",
+    "pixtral-large": "Pixtral Large",
+
+    // Qwen models (Alibaba)
+    qwen: "Qwen",
+    "qwen-2": "Qwen 2",
+    "qwen-2-5": "Qwen 2.5",
+    "qwen-turbo": "Qwen Turbo",
+    "qwen-plus": "Qwen Plus",
+    "qwen-max": "Qwen Max",
+    "qwq": "QwQ",
+
+    // Grok models (xAI)
+    grok: "Grok",
+    "grok-2": "Grok 2",
+    "grok-3": "Grok 3",
+    "grok-beta": "Grok Beta",
+
+    // Cohere models
+    command: "Command",
+    "command-r": "Command R",
+    "command-r-plus": "Command R+",
+    "command-a": "Command A",
+
+    // Other models
+    "yi-lightning": "Yi Lightning",
+    "yi-large": "Yi Large",
+    perplexity: "Perplexity",
+    "sonar-pro": "Sonar Pro",
+    "sonar-reasoning": "Sonar Reasoning",
   };
 
   // Check exact match

@@ -84,12 +84,19 @@ feat: add new feature
 
 ### Supported Models
 
-The plugin recognizes and formats the following models:
+The plugin recognizes and formats the following model families:
 
-- **Kimi** (kimi, kimi-for-coding, k2p5)
-- **Claude** (claude, claude-3, claude-3-5-sonnet)
-- **GPT** (gpt-4, gpt-4o, gpt-4o-mini)
-- **Gemini** (gemini, gemini-pro, gemini-ultra)
+- **Kimi** (Kimi, K2.5, Moonshot)
+- **Claude** (Claude 3/3.5/4/4.5 - Opus, Sonnet, Haiku)
+- **GPT** (GPT-4, GPT-4o, GPT-4.5, GPT-5, o1, o3, o4)
+- **Gemini** (Gemini 1.5/2.0/2.5/3 - Pro, Flash, Ultra)
+- **DeepSeek** (DeepSeek V3, R1, Coder)
+- **Llama** (Llama 3/3.1/3.2/3.3/4)
+- **Mistral** (Mistral Large/Medium/Small, Codestral, Pixtral)
+- **Qwen** (Qwen 2/2.5, Turbo, Plus, Max, QwQ)
+- **Grok** (Grok 2, 3)
+- **Cohere** (Command R, R+, A)
+- **Others** (Yi, Perplexity Sonar, and more)
 
 Other models will be displayed with their raw ID formatted nicely.
 
