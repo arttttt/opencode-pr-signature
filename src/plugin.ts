@@ -1,15 +1,13 @@
 /**
  * OpenCode PR Auto-Signature Plugin
  *
- * Automatically appends AI model signature to PR and Issue bodies.
+ * Automatically appends AI model signature to PR, Issue bodies, and git commits.
  *
  * @author arttttt
  * @license Apache-2.0
  */
 
-import type { Plugin, PluginInput } from "@opencode-ai/plugin";
-
-type OpencodeClient = PluginInput["client"];
+import type { Plugin } from "@opencode-ai/plugin";
 
 /**
  * Format model name to human-readable form
@@ -85,23 +83,72 @@ function generateSignature(modelName: string): string {
 }
 
 /**
- * Check if body already contains OpenCode signature
+ * Check if text already contains OpenCode signature
  */
-function hasSignature(body: string): boolean {
-  return body.includes("Generated with [OpenCode]");
+function hasSignature(text: string): boolean {
+  return text.includes("Generated with [OpenCode]");
+}
+
+/**
+ * Find the end position of git commit command in a bash command string.
+ * Respects quotes to avoid splitting on && or || inside quoted strings.
+ *
+ * @param command - The full bash command string
+ * @param startIndex - Where to start searching from
+ * @returns The index where git commit command ends (before && || ; | or end of string)
+ */
+function findGitCommitEndIndex(command: string, startIndex: number): number {
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let i = startIndex;
+
+  while (i < command.length) {
+    const char = command[i];
+    const prevChar = i > 0 ? command[i - 1] : "";
+
+    // Handle quote toggling (ignore escaped quotes)
+    if (char === "'" && !inDoubleQuote && prevChar !== "\\") {
+      inSingleQuote = !inSingleQuote;
+    } else if (char === '"' && !inSingleQuote && prevChar !== "\\") {
+      inDoubleQuote = !inDoubleQuote;
+    } else if (!inSingleQuote && !inDoubleQuote) {
+      // Check for command separators outside of quotes
+      const remaining = command.slice(i);
+      if (
+        remaining.startsWith("&&") ||
+        remaining.startsWith("||") ||
+        remaining.startsWith(";") ||
+        remaining.startsWith("|")
+      ) {
+        return i;
+      }
+    }
+    i++;
+  }
+
+  return command.length;
+}
+
+/**
+ * Escape special characters for use in shell -m argument
+ */
+function escapeForShell(text: string): string {
+  // Escape double quotes and backslashes
+  return text.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
 /**
  * PR Auto-Signature Plugin
  *
- * Automatically appends AI model signature to PR and Issue bodies.
+ * Automatically appends AI model signature to PR and Issue bodies,
+ * as well as git commit messages.
  */
-export const PRSignaturePlugin: Plugin = async ({ client }) => {
+export const PRSignaturePlugin: Plugin = async () => {
   // Store current model name
   let currentModel = "Unknown Model";
 
-  // Tools to intercept
-  const toolsToIntercept = [
+  // GitHub/MCP tools to intercept for PR/Issue operations
+  const prIssueTools = [
     "github_create_pull_request",
     "github_create_issue",
     "github_update_pull_request",
@@ -112,21 +159,15 @@ export const PRSignaturePlugin: Plugin = async ({ client }) => {
     "MCP_DOCKER_update_issue",
   ];
 
-  // Git commands that create commits
-  const gitCommitPatterns = [
-    /git\s+commit/i,
-    /git\s+commit\s+-m/i,
-  ];
-
   return {
     /**
      * Hook: chat.message
-     * Track the current model from chat messages
+     * Track the current model from chat messages.
+     * Note: model is passed in input, not output.message
      */
-    "chat.message": async (_input, output) => {
-      // Extract model from message
-      if (output.message?.model) {
-        currentModel = formatModelName(output.message.model);
+    "chat.message": async (input, _output) => {
+      if (input.model) {
+        currentModel = formatModelName(input.model);
       }
     },
 
@@ -135,14 +176,11 @@ export const PRSignaturePlugin: Plugin = async ({ client }) => {
      * Intercept PR, Issue creation/update, and git commits to add signature
      */
     "tool.execute.before": async (input, output) => {
-      // Handle GitHub/MCP tools
-      if (toolsToIntercept.includes(input.tool)) {
-        // Generate signature
+      // Handle GitHub/MCP PR and Issue tools
+      if (prIssueTools.includes(input.tool)) {
         const signature = generateSignature(currentModel);
 
-        // Append signature to body
         if (output.args?.body) {
-          // Check if signature already exists
           if (!hasSignature(output.args.body)) {
             output.args.body = output.args.body.trim() + "\n\n" + signature;
           }
@@ -150,38 +188,35 @@ export const PRSignaturePlugin: Plugin = async ({ client }) => {
           output.args.body = signature;
         }
 
-        // Log for debugging
-        console.log(`[PRSignature] Added signature for model: ${currentModel}`);
+        console.log(`[PRSignature] Added signature to ${input.tool} for model: ${currentModel}`);
         return;
       }
 
-      // Handle git commit commands via bash
+      // Handle git commit commands via bash tool
       if (input.tool === "bash" && output.args?.command) {
-        const command = output.args.command;
-        
-        // Check if this is a git commit command
-        const isGitCommit = gitCommitPatterns.some(pattern => pattern.test(command));
-        
-        if (isGitCommit) {
-          // Check if command already has -m flag
-          if (command.includes(' -m ') || command.includes(' --message=')) {
-            // Extract the message and append signature
-            const signature = generateSignature(currentModel);
-            
-            // If command uses -m "message" format
-            if (command.includes(' -m ')) {
-              // Replace the message part
-              output.args.command = command.replace(
-                /-m\s+["']([^"']+)["']/,
-                (match, msg) => {
-                  if (!hasSignature(msg)) {
-                    return `-m "${msg.trim()}\n\n${signature}"`;
-                  }
-                  return match;
-                }
-              );
-            }
-            
+        const command: string = output.args.command;
+
+        // Check if this is a git commit command with a message flag
+        const isGitCommit = /git\s+commit\b/i.test(command);
+        const hasMessageFlag = /\s-m\s|\s-m["']|\s--message[=\s]/i.test(command);
+
+        if (isGitCommit && hasMessageFlag && !hasSignature(command)) {
+          const signature = generateSignature(currentModel);
+          const escapedSignature = escapeForShell(signature);
+
+          // Find where "git commit" starts
+          const gitCommitMatch = command.match(/git\s+commit\b/i);
+          if (gitCommitMatch && gitCommitMatch.index !== undefined) {
+            // Find where this git commit command ends
+            const endIndex = findGitCommitEndIndex(command, gitCommitMatch.index);
+
+            // Insert additional -m flag with signature before the separator
+            // Git concatenates multiple -m messages with blank lines between them
+            const beforeEnd = command.slice(0, endIndex).trimEnd();
+            const afterEnd = command.slice(endIndex);
+
+            output.args.command = `${beforeEnd} -m "${escapedSignature}"${afterEnd}`;
+
             console.log(`[PRSignature] Added signature to git commit for model: ${currentModel}`);
           }
         }
