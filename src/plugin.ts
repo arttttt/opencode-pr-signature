@@ -188,7 +188,6 @@ export const PRSignaturePlugin: Plugin = async () => {
           output.args.body = signature;
         }
 
-        console.log(`[PRSignature] Added signature to ${input.tool} for model: ${currentModel}`);
         return;
       }
 
@@ -216,8 +215,6 @@ export const PRSignaturePlugin: Plugin = async () => {
             const afterEnd = command.slice(endIndex);
 
             output.args.command = `${beforeEnd} -m "${escapedSignature}"${afterEnd}`;
-
-            console.log(`[PRSignature] Added signature to git commit for model: ${currentModel}`);
           }
         }
       }
