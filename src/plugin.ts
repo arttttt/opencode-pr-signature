@@ -375,7 +375,9 @@ function addSignatureToGhCommand(command: string, signature: string, startIndex:
 
     if (match) {
       const [fullMatch, flag, quote, content] = match;
-      const newContent = content.trimEnd() + "\\n\\n" + escapedSignature;
+      // Use real newlines: gh receives the body via a quoted shell argument,
+      // where bash preserves literal newlines but would NOT interpret "\n".
+      const newContent = content.trimEnd() + "\n\n" + escapedSignature;
       const newBody = `${flag} ${quote}${newContent}${quote}`;
       const modifiedPart = commandPart.replace(fullMatch, newBody);
       return beforeCommand + modifiedPart + afterCommand;
