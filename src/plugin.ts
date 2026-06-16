@@ -60,6 +60,12 @@ function formatModelString(modelId: string): string {
     "moonshot-v1-32k": "Moonshot",
     "moonshot-v1-128k": "Moonshot",
     "moonshot-v1-vision-preview": "Moonshot Vision",
+    "moonshot-v1-8k-vision-preview": "Moonshot Vision",
+    "moonshot-v1-32k-vision-preview": "Moonshot Vision",
+    "moonshot-v1-128k-vision-preview": "Moonshot Vision",
+    "kimi-k2.6": "Kimi K2.6",
+    "kimi-k2-6": "Kimi K2.6",
+    "kimi-k2.7-code": "Kimi K2.7 Code",
 
     // Claude models (Anthropic)
     claude: "Claude",
@@ -78,6 +84,10 @@ function formatModelString(modelId: string): string {
     "claude-opus-4-5": "Claude Opus 4.5",
     "claude-opus-4-6": "Claude Opus 4.6",
     "claude-sonnet-4-6": "Claude Sonnet 4.6",
+    "claude-opus-4-7": "Claude Opus 4.7",
+    "claude-opus-4-8": "Claude Opus 4.8",
+    "claude-fable-5": "Claude Fable 5",
+    "claude-mythos-5": "Claude Mythos 5",
 
     // GPT models (OpenAI)
     "gpt-4": "GPT-4",
@@ -97,6 +107,20 @@ function formatModelString(modelId: string): string {
     "gpt-5-1": "GPT-5.1",
     "gpt-5-2": "GPT-5.2",
     "gpt-5-2-pro": "GPT-5.2 Pro",
+    "gpt-5-3": "GPT-5.3",
+    "gpt-5.3": "GPT-5.3",
+    "gpt-5-4": "GPT-5.4",
+    "gpt-5.4": "GPT-5.4",
+    "gpt-5-4-pro": "GPT-5.4 Pro",
+    "gpt-5.4-pro": "GPT-5.4 Pro",
+    "gpt-5-4-mini": "GPT-5.4 Mini",
+    "gpt-5.4-mini": "GPT-5.4 Mini",
+    "gpt-5-4-nano": "GPT-5.4 Nano",
+    "gpt-5.4-nano": "GPT-5.4 Nano",
+    "gpt-5-5": "GPT-5.5",
+    "gpt-5.5": "GPT-5.5",
+    "gpt-5-5-pro": "GPT-5.5 Pro",
+    "gpt-5.5-pro": "GPT-5.5 Pro",
 
     // Codex models (OpenAI)
     "codex-1": "Codex",
@@ -112,6 +136,8 @@ function formatModelString(modelId: string): string {
     "gpt-5-2-codex": "GPT-5.2 Codex",
     "gpt-5.3-codex": "GPT-5.3 Codex",
     "gpt-5-3-codex": "GPT-5.3 Codex",
+    "gpt-5.3-codex-spark": "GPT-5.3 Codex Spark",
+    "gpt-5-3-codex-spark": "GPT-5.3 Codex Spark",
 
     // o-series reasoning models (OpenAI)
     "o1": "o1",
@@ -145,6 +171,9 @@ function formatModelString(modelId: string): string {
     "gemini-3-flash-preview": "Gemini 3 Flash",
     "gemini-3-1-pro": "Gemini 3.1 Pro",
     "gemini-3-1-pro-preview": "Gemini 3.1 Pro",
+    "gemini-3-1-flash-lite": "Gemini 3.1 Flash Lite",
+    "gemini-3-5-flash": "Gemini 3.5 Flash",
+    "gemini-3-5-flash-preview": "Gemini 3.5 Flash",
 
     // DeepSeek models
     deepseek: "DeepSeek",
@@ -158,6 +187,9 @@ function formatModelString(modelId: string): string {
     "deepseek-r1": "DeepSeek R1",
     "deepseek-r1-lite": "DeepSeek R1 Lite",
     "deepseek-prover-v2": "DeepSeek Prover V2",
+    "deepseek-v4": "DeepSeek V4",
+    "deepseek-v4-pro": "DeepSeek V4 Pro",
+    "deepseek-v4-flash": "DeepSeek V4 Flash",
 
     // Llama models (Meta)
     llama: "Llama",
@@ -199,6 +231,14 @@ function formatModelString(modelId: string): string {
     ministral: "Ministral",
     "ministral-3b": "Ministral 3B",
     mathstral: "Mathstral",
+    "mistral-large-3": "Mistral Large 3",
+    "mistral-medium-3-5": "Mistral Medium 3.5",
+    "mistral-small-4": "Mistral Small 4",
+    "ministral-3": "Ministral 3",
+    "ministral-3-8b": "Ministral 3 8B",
+    "mistral-ocr-3": "Mistral OCR 3",
+    voxtral: "Voxtral",
+    "voxtral-small": "Voxtral Small",
 
     // Qwen models (Alibaba)
     qwen: "Qwen",
@@ -225,6 +265,24 @@ function formatModelString(modelId: string): string {
     "qwen-vl-plus": "Qwen VL Plus",
     qwq: "QwQ",
     "qwq-plus": "QwQ Plus",
+    "qwen3.6-plus": "Qwen 3.6 Plus",
+    "qwen3-6-plus": "Qwen 3.6 Plus",
+    "qwen3.7-max": "Qwen 3.7 Max",
+    "qwen3-7-max": "Qwen 3.7 Max",
+    "qwen3.7-plus": "Qwen 3.7 Plus",
+    "qwen3-7-plus": "Qwen 3.7 Plus",
+    "qwen3-vl-plus": "Qwen 3 VL Plus",
+    "qwen3-vl-flash": "Qwen 3 VL Flash",
+    "qwen3-vl-max": "Qwen 3 VL Max",
+    "qwen-vl-ocr": "Qwen VL OCR",
+    "qwen3.6-flash": "Qwen 3.6 Flash",
+    "qwen3-6-flash": "Qwen 3.6 Flash",
+    "qwen3.6-max": "Qwen 3.6 Max",
+    "qwen3-6-max": "Qwen 3.6 Max",
+    "qwen3.5-omni-plus": "Qwen 3.5 Omni Plus",
+    "qwen3-5-omni-plus": "Qwen 3.5 Omni Plus",
+    "qwen3-omni-flash": "Qwen 3 Omni Flash",
+    "qwen-omni-turbo": "Qwen Omni Turbo",
 
     // Grok models (xAI)
     grok: "Grok",
@@ -239,6 +297,28 @@ function formatModelString(modelId: string): string {
     "grok-3-mini-fast": "Grok 3 Mini",
     "grok-3-mini-fast-beta": "Grok 3 Mini",
     "grok-beta": "Grok 2 Beta",
+    "grok-4": "Grok 4",
+    "grok-4-heavy": "Grok 4 Heavy",
+    "grok-4-fast": "Grok 4 Fast",
+    "grok-4-fast-reasoning": "Grok 4 Fast",
+    "grok-4-fast-non-reasoning": "Grok 4 Fast",
+    "grok-code-fast-1": "Grok Code Fast 1",
+    "grok-4.1": "Grok 4.1",
+    "grok-4-1": "Grok 4.1",
+    "grok-4.1-fast": "Grok 4.1 Fast",
+    "grok-4-1-fast": "Grok 4.1 Fast",
+    "grok-4.1-fast-reasoning": "Grok 4.1 Fast",
+    "grok-4-1-fast-reasoning": "Grok 4.1 Fast",
+    "grok-4.1-fast-non-reasoning": "Grok 4.1 Fast",
+    "grok-4-1-fast-non-reasoning": "Grok 4.1 Fast",
+    "grok-4.20": "Grok 4.20",
+    "grok-4-20": "Grok 4.20",
+    "grok-4.20-reasoning": "Grok 4.20",
+    "grok-4-20-reasoning": "Grok 4.20",
+    "grok-4.20-non-reasoning": "Grok 4.20",
+    "grok-4-20-non-reasoning": "Grok 4.20",
+    "grok-4.3": "Grok 4.3",
+    "grok-4-3": "Grok 4.3",
 
     // Cohere models
     command: "Command",
@@ -258,7 +338,145 @@ function formatModelString(modelId: string): string {
 
     // Yi models (01.AI)
     "yi-lightning": "Yi Lightning",
+    "yi-lightning-lite": "Yi Lightning Lite",
     "yi-large": "Yi Large",
+    "yi-large-turbo": "Yi Large Turbo",
+    "yi-large-fc": "Yi Large FC",
+    "yi-large-rag": "Yi Large RAG",
+    "yi-vision": "Yi Vision",
+    "yi-medium": "Yi Medium",
+    "yi-spark": "Yi Spark",
+
+    // GLM models (Zhipu AI / Z.ai)
+    glm: "GLM",
+    "glm-5.2": "GLM-5.2",
+    "glm-5-2": "GLM-5.2",
+    "glm-5.1": "GLM-5.1",
+    "glm-5-1": "GLM-5.1",
+    "glm-5": "GLM-5",
+    "glm-5-turbo": "GLM-5 Turbo",
+    "glm-5v-turbo": "GLM-5V Turbo",
+    "glm-4.7": "GLM-4.7",
+    "glm-4-7": "GLM-4.7",
+    "glm-4.7-flash": "GLM-4.7 Flash",
+    "glm-4-7-flash": "GLM-4.7 Flash",
+    "glm-4.6": "GLM-4.6",
+    "glm-4-6": "GLM-4.6",
+    "glm-4.6v": "GLM-4.6V",
+    "glm-4-6v": "GLM-4.6V",
+    "glm-4.5": "GLM-4.5",
+    "glm-4-5": "GLM-4.5",
+    "glm-4.5-air": "GLM-4.5 Air",
+    "glm-4-5-air": "GLM-4.5 Air",
+    "glm-4.5-x": "GLM-4.5-X",
+    "glm-4-5-x": "GLM-4.5-X",
+    "glm-4.5-airx": "GLM-4.5-AirX",
+    "glm-4-5-airx": "GLM-4.5-AirX",
+    "glm-4.5-flash": "GLM-4.5 Flash",
+    "glm-4-5-flash": "GLM-4.5 Flash",
+    "glm-4.5v": "GLM-4.5V",
+    "glm-4-5v": "GLM-4.5V",
+    "glm-4-32b": "GLM-4-32B",
+    "glm-4-plus": "GLM-4-Plus",
+    "glm-4-air": "GLM-4 Air",
+    "glm-4-flashx": "GLM-4-FlashX",
+    "glm-z1-air": "GLM-Z1-Air",
+    "glm-z1-airx": "GLM-Z1-AirX",
+    "glm-z1-flash": "GLM-Z1-Flash",
+    "glm-z1-32b": "GLM-Z1-32B",
+    "glm-z1-rumination-32b": "GLM-Z1-Rumination-32B",
+
+    // MiniMax models
+    minimax: "MiniMax",
+    "minimax-m3": "MiniMax M3",
+    "minimax-m2.7": "MiniMax M2.7",
+    "minimax-m2-7": "MiniMax M2.7",
+    "minimax-m2.5": "MiniMax M2.5",
+    "minimax-m2-5": "MiniMax M2.5",
+    "minimax-m2.1": "MiniMax M2.1",
+    "minimax-m2-1": "MiniMax M2.1",
+    "minimax-m2": "MiniMax M2",
+    "minimax-m1": "MiniMax M1",
+    "minimax-text-01": "MiniMax Text-01",
+    "minimax-01": "MiniMax-01",
+    "abab6.5-chat": "abab6.5",
+    "abab6.5s-chat": "abab6.5s",
+
+    // Amazon Nova models
+    "nova-2-pro": "Amazon Nova 2 Pro",
+    "amazon-nova-2-pro": "Amazon Nova 2 Pro",
+    "nova-2-lite": "Amazon Nova 2 Lite",
+    "amazon-nova-2-lite": "Amazon Nova 2 Lite",
+    "nova-premier": "Amazon Nova Premier",
+    "amazon-nova-premier": "Amazon Nova Premier",
+    "nova-pro": "Amazon Nova Pro",
+    "amazon-nova-pro": "Amazon Nova Pro",
+    "nova-lite": "Amazon Nova Lite",
+    "amazon-nova-lite": "Amazon Nova Lite",
+    "nova-micro": "Amazon Nova Micro",
+    "amazon-nova-micro": "Amazon Nova Micro",
+
+    // Baidu ERNIE models
+    "ernie-5.1": "ERNIE 5.1",
+    "ernie-5-1": "ERNIE 5.1",
+    "ernie-5.0": "ERNIE 5.0",
+    "ernie-5-0": "ERNIE 5.0",
+    "ernie-x1.1": "ERNIE X1.1",
+    "ernie-x1-1": "ERNIE X1.1",
+    "ernie-x1": "ERNIE X1",
+    "ernie-4.5-turbo": "ERNIE 4.5 Turbo",
+    "ernie-4-5-turbo": "ERNIE 4.5 Turbo",
+    "ernie-4.5": "ERNIE 4.5",
+    "ernie-4-5": "ERNIE 4.5",
+    "ernie-speed": "ERNIE Speed",
+    "ernie-lite": "ERNIE Lite",
+
+    // Tencent Hunyuan models
+    "hunyuan-turbos": "Hunyuan TurboS",
+    "hunyuan-turbo-s": "Hunyuan TurboS",
+    "hunyuan-t1": "Hunyuan T1",
+    "hunyuan-a13b": "Hunyuan A13B",
+    "hunyuan-standard": "Hunyuan Standard",
+    "hunyuan-lite": "Hunyuan Lite",
+    "hunyuan-large": "Hunyuan Large",
+
+    // ByteDance Doubao / Seed models
+    "doubao-seed-2.0-pro": "Doubao Seed 2.0 Pro",
+    "doubao-seed-2-0-pro": "Doubao Seed 2.0 Pro",
+    "doubao-seed-2.0-lite": "Doubao Seed 2.0 Lite",
+    "doubao-seed-2-0-lite": "Doubao Seed 2.0 Lite",
+    "doubao-seed-1.6": "Doubao Seed 1.6",
+    "doubao-seed-1-6": "Doubao Seed 1.6",
+    "doubao-1.5-pro": "Doubao 1.5 Pro",
+    "doubao-1-5-pro": "Doubao 1.5 Pro",
+    "doubao-1.5-lite": "Doubao 1.5 Lite",
+
+    // Microsoft Phi models
+    "phi-4-reasoning-vision": "Phi-4 Reasoning Vision",
+    "phi-4-reasoning-plus": "Phi-4 Reasoning Plus",
+    "phi-4-reasoning": "Phi-4 Reasoning",
+    "phi-4-mini-reasoning": "Phi-4 Mini Reasoning",
+    "phi-4-multimodal": "Phi-4 Multimodal",
+    "phi-4-mini": "Phi-4 Mini",
+    "phi-4": "Phi-4",
+    "phi-3.5-mini": "Phi-3.5 Mini",
+    "phi-3-5-mini": "Phi-3.5 Mini",
+
+    // AI21 Jamba models
+    "jamba-large-1.7": "Jamba Large 1.7",
+    "jamba-large-1-7": "Jamba Large 1.7",
+    "jamba-large": "Jamba Large",
+    "jamba-mini-2": "Jamba Mini 2",
+    "jamba-mini": "Jamba Mini",
+    "jamba-3b-2": "Jamba 3B 2",
+
+    // Reka models
+    "reka-core": "Reka Core",
+    "reka-flash-3.1": "Reka Flash 3.1",
+    "reka-flash-3-1": "Reka Flash 3.1",
+    "reka-flash-3": "Reka Flash 3",
+    "reka-flash": "Reka Flash",
+    "reka-edge": "Reka Edge",
   };
 
   // Check exact match
@@ -266,10 +484,14 @@ function formatModelString(modelId: string): string {
     return knownModels[cleanName];
   }
 
-  // Check partial match
-  for (const [key, value] of Object.entries(knownModels)) {
-    if (cleanName.toLowerCase().includes(key.toLowerCase())) {
-      return value;
+  // Check partial match. Try the most specific (longest) keys first so generic
+  // keys like "claude" or "gpt-4" don't shadow specific ones like
+  // "claude-3-5-sonnet" or "gpt-4o" for unknown model-id variants.
+  const lowerName = cleanName.toLowerCase();
+  const keysBySpecificity = Object.keys(knownModels).sort((a, b) => b.length - a.length);
+  for (const key of keysBySpecificity) {
+    if (lowerName.includes(key.toLowerCase())) {
+      return knownModels[key];
     }
   }
 

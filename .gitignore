@@ -1,0 +1,12 @@
+# Dependencies
+node_modules/
+
+# Lockfiles from non-default package managers
+package-lock.json
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS / editor
+.DS_Store
