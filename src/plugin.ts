@@ -359,7 +359,7 @@ function hasBodyFlag(command: string): boolean {
  * If --body/-b exists, append signature to its value.
  * If not, add --body flag with signature.
  */
-function addSignatureToGhCommand(command: string, signature: string, startIndex: number, isPrDescription: boolean = false): string {
+function addSignatureToGhCommand(command: string, signature: string, startIndex: number): string {
   const escapedSignature = escapeForShell(signature);
   const endIndex = findCommandEndIndex(command, startIndex);
 
@@ -375,8 +375,9 @@ function addSignatureToGhCommand(command: string, signature: string, startIndex:
 
     if (match) {
       const [fullMatch, flag, quote, content] = match;
-      const separator = isPrDescription ? "\n\n" : "\\n\\n";
-      const newContent = content.trimEnd() + separator + escapedSignature;
+      // Use real newlines: gh receives the body via a quoted shell argument,
+      // where bash preserves literal newlines but would NOT interpret "\n".
+      const newContent = content.trimEnd() + "\n\n" + escapedSignature;
       const newBody = `${flag} ${quote}${newContent}${quote}`;
       const modifiedPart = commandPart.replace(fullMatch, newBody);
       return beforeCommand + modifiedPart + afterCommand;
@@ -481,9 +482,7 @@ export const PRSignaturePlugin: Plugin = async () => {
           const ghMatch = command.match(/gh\s+(pr|issue)\s+(create|comment|review)\b/i);
 
           if (ghMatch && ghMatch.index !== undefined) {
-            const isPrDescription =
-              ghMatch[1]?.toLowerCase() === "pr" && ghMatch[2]?.toLowerCase() === "create";
-            output.args.command = addSignatureToGhCommand(command, signature, ghMatch.index, isPrDescription);
+            output.args.command = addSignatureToGhCommand(command, signature, ghMatch.index);
           }
         }
       }
