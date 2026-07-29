@@ -561,6 +561,158 @@ function escapeForShell(text: string): string {
   return text.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
+function quoteShellArgument(value: string): string {
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+type ShellWord = {
+  raw: string;
+  value: string;
+  start: number;
+  end: number;
+};
+
+type CommitMessageSource =
+  | { kind: "message" }
+  | { kind: "file"; value: string; start: number; end: number };
+
+/** Read the limited shell word syntax used for git commit message options. */
+function readShellWord(command: string, startIndex: number): ShellWord | undefined {
+  let start = startIndex;
+  while (/\s/.test(command[start] ?? "")) start++;
+  if (!command[start] || /[;|&]/.test(command[start])) return undefined;
+
+  let value = "";
+  let quote: "'" | '"' | undefined;
+  let i = start;
+
+  while (i < command.length) {
+    const char = command[i];
+    if (quote) {
+      if (char === quote) {
+        quote = undefined;
+      } else if (char === "\\" && quote === '"' && i + 1 < command.length) {
+        value += command[++i];
+      } else {
+        value += char;
+      }
+    } else if (char === "'" || char === '"') {
+      quote = char;
+    } else if (char === "\\" && i + 1 < command.length) {
+      value += command[++i];
+    } else if (/\s/.test(char) || /[;|&]/.test(char)) {
+      break;
+    } else {
+      value += char;
+    }
+    i++;
+  }
+
+  if (quote || i === start) return undefined;
+  return { raw: command.slice(start, i), value, start, end: i };
+}
+
+function findCommitMessageSource(command: string, startIndex: number): CommitMessageSource | undefined {
+  let index = startIndex;
+  let source: CommitMessageSource | undefined;
+
+  while (index < command.length) {
+    const word = readShellWord(command, index);
+    if (!word || word.value === "--") break;
+    index = word.end;
+
+    if (word.value === "-m" || word.value === "--message") {
+      const message = readShellWord(command, index);
+      if (!message || source?.kind === "file") return undefined;
+      source = { kind: "message" };
+      index = message.end;
+      continue;
+    }
+    if (word.value.startsWith("--message=")) {
+      if (source?.kind === "file") return undefined;
+      source = { kind: "message" };
+      continue;
+    }
+
+    let file: ShellWord | undefined;
+    if (word.value === "-F" || word.value === "--file") {
+      file = readShellWord(command, index);
+      if (!file) return undefined;
+      index = file.end;
+    } else if (word.value.startsWith("-F") && word.value.length > 2) {
+      file = { raw: word.raw.slice(2), value: word.value.slice(2), start: word.start + 2, end: word.end };
+    } else if (word.value.startsWith("--file=") && word.value.length > 7) {
+      file = { raw: word.raw.slice(7), value: word.value.slice(7), start: word.start + 7, end: word.end };
+    }
+
+    if (file) {
+      // Dynamic paths would be evaluated a second time by the wrapper.
+      if (source || /[$`]/.test(file.raw)) return undefined;
+      source = { kind: "file", value: file.value, start: word.start, end: file.end };
+    }
+  }
+  return source;
+}
+
+function addSignatureToHeredoc(command: string, signature: string, afterOption: number): string | undefined {
+  const header = /<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/.exec(command.slice(afterOption));
+  if (!header || header.index === undefined) return undefined;
+
+  const headerEnd = afterOption + header.index + header[0].length;
+  const bodyStart = command.indexOf("\n", headerEnd);
+  if (bodyStart === -1) return undefined;
+
+  const delimiter = header[2].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const indent = header[0].startsWith("<<-") ? "\\t*" : "";
+  const delimiterMatch = new RegExp(`^${indent}${delimiter}\\r?$`, "m").exec(command.slice(bodyStart + 1));
+  if (!delimiterMatch || delimiterMatch.index === undefined) return undefined;
+
+  const delimiterStart = bodyStart + 1 + delimiterMatch.index;
+  const body = command.slice(bodyStart + 1, delimiterStart);
+  if (hasSignature(body)) return command;
+  return command.slice(0, delimiterStart) + `\n${signature}\n` + command.slice(delimiterStart);
+}
+
+/**
+ * Add a signature to a single git commit command. File-backed messages are
+ * copied to a temporary file so the caller's message file is never modified.
+ */
+export function addSignatureToGitCommitCommand(command: string, signature: string): string {
+  const gitCommitMatch = command.match(/git\s+commit\b/i);
+  if (!gitCommitMatch || gitCommitMatch.index === undefined) return command;
+
+  const gitCommitStart = gitCommitMatch.index;
+  const endIndex = findCommandEndIndex(command, gitCommitStart);
+  const commandPart = command.slice(gitCommitStart, endIndex);
+  const source = findCommitMessageSource(commandPart, gitCommitMatch[0].length);
+  if (!source) return command;
+
+  if (source.kind === "message") {
+    if (hasSignature(commandPart)) return command;
+    const beforeEnd = command.slice(0, endIndex).trimEnd();
+    const afterCommand = command.slice(endIndex);
+    const separator = afterCommand && !/^\s/.test(afterCommand) ? " " : "";
+    return `${beforeEnd} -m ${quoteShellArgument(signature)}${separator}${afterCommand}`;
+  }
+
+  if (source.value === "-") {
+    const heredocCommand = addSignatureToHeredoc(commandPart, signature, source.end);
+    if (heredocCommand) return command.slice(0, gitCommitStart) + heredocCommand + command.slice(endIndex);
+  }
+
+  const tempFile = "__opencode_signature_file";
+  const rewrittenCommit = commandPart.slice(0, source.start) + `-F "$${tempFile}"` + commandPart.slice(source.end);
+  const readMessage = source.value === "-"
+    ? `cat >"$${tempFile}"`
+    : `cat -- ${quoteShellArgument(source.value)} >"$${tempFile}"`;
+  const marker = quoteShellArgument("Generated with [OpenCode]");
+  const quotedSignature = quoteShellArgument(signature);
+  const wrapper = `( ${tempFile}=$(mktemp "\${TMPDIR:-/tmp}/opencode-pr-signature.XXXXXX") || exit; trap 'rm -f -- "$${tempFile}"' 0 HUP INT TERM; ${readMessage} || exit; if ! grep -Fq -- ${marker} "$${tempFile}"; then printf '\\n\\n%s\\n' ${quotedSignature} >>"$${tempFile}" || exit; fi; ${rewrittenCommit} )`;
+  const afterCommand = command.slice(endIndex);
+  const separator = afterCommand && !/^\s/.test(afterCommand) ? " " : "";
+  return command.slice(0, gitCommitStart) + wrapper + separator + afterCommand;
+}
+
 /**
  * Check if a command is a gh CLI command that needs signature injection.
  * Supported commands: gh pr create, gh issue create, gh pr comment, gh issue comment, gh pr review
@@ -674,33 +826,17 @@ export const PRSignaturePlugin: Plugin = async () => {
       if (input.tool === "bash" && output.args?.command) {
         const command: string = output.args.command;
 
-        // Skip if signature already exists
-        if (hasSignature(command)) {
-          return;
-        }
-
         const signature = generateSignature(currentModel);
 
         // Handle git commit commands
-        const isGitCommit = /git\s+commit\b/i.test(command);
-        const hasMessageFlag = /\s-m\s|\s-m["']|\s--message[=\s]/i.test(command);
-
-        if (isGitCommit && hasMessageFlag) {
-          const escapedSignature = escapeForShell(signature);
-          const gitCommitMatch = command.match(/git\s+commit\b/i);
-
-          if (gitCommitMatch && gitCommitMatch.index !== undefined) {
-            const endIndex = findCommandEndIndex(command, gitCommitMatch.index);
-            const beforeEnd = command.slice(0, endIndex).trimEnd();
-            const afterEnd = command.slice(endIndex);
-
-            output.args.command = `${beforeEnd} -m "${escapedSignature}"${afterEnd}`;
-          }
+        const signedGitCommitCommand = addSignatureToGitCommitCommand(command, signature);
+        if (signedGitCommitCommand !== command) {
+          output.args.command = signedGitCommitCommand;
           return;
         }
 
         // Handle gh CLI commands (pr create, issue create, pr comment, issue comment, pr review)
-        if (isGhCommandWithBody(command)) {
+        if (isGhCommandWithBody(command) && !hasSignature(command)) {
           const ghMatch = command.match(/gh\s+(pr|issue)\s+(create|comment|review)\b/i);
 
           if (ghMatch && ghMatch.index !== undefined) {

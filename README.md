@@ -74,6 +74,8 @@ feat: add new feature
 #### Git CLI
 - `git commit -m "message"`
 - `git commit --message="message"`
+- `git commit -F message.txt` and `git commit --file=message.txt`
+- `git commit -F-` with a heredoc or piped message
 
 #### gh CLI (GitHub CLI)
 - `gh pr create`
@@ -108,7 +110,8 @@ Other models will be displayed with their raw ID formatted nicely.
    - Bash commands (`git commit`, `gh pr create`, etc.)
 3. **Signature Injection**: Before the tool executes, it appends the signature:
    - For MCP tools: modifies the `body` argument
-   - For `git commit`: adds an additional `-m` flag (git concatenates multiple `-m` with blank lines)
+   - For `git commit -m`: adds an additional `-m` flag (git concatenates multiple `-m` with blank lines)
+   - For `git commit -F` / `--file`: copies the message to a temporary file, appends the signature there, and leaves the source file unchanged
    - For `gh` commands: appends to `--body` or adds new `--body` flag
 4. **Duplicate Prevention**: Checks if signature already exists to avoid duplicates
 
