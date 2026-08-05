@@ -269,6 +269,88 @@ export function findCommandEndIndex(command: string, startIndex: number): number
 }
 
 /**
+ * What is feeding a command's standard input, as far as its own text says.
+ *
+ * "none" still leaves the pipeline: a command with no redirect of its own may
+ * be downstream of a `|`, which findPrecedingPipe answers separately.
+ */
+export type StdinRedirect =
+  | { kind: "none" }
+  | { kind: "heredoc" }
+  | { kind: "file"; token: string; start: number; end: number }
+  | { kind: "string"; token: string; start: number; end: number }
+  | { kind: "unknown" };
+
+/**
+ * Find what redirects a command's standard input, within one command's text.
+ *
+ * Output redirections are skipped: they say nothing about where the message
+ * comes from. Anything else that touches descriptor 0 in a way not modelled
+ * here answers "unknown", so callers decline rather than guess.
+ */
+export function findStdinRedirect(command: string): StdinRedirect {
+  let found: StdinRedirect = { kind: "none" };
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i];
+    const prevChar = i > 0 ? command[i - 1] : "";
+
+    if (char === "'" && !inDoubleQuote && prevChar !== "\\") {
+      inSingleQuote = !inSingleQuote;
+      continue;
+    }
+    if (char === '"' && !inSingleQuote && prevChar !== "\\") {
+      inDoubleQuote = !inDoubleQuote;
+      continue;
+    }
+    if (inSingleQuote || inDoubleQuote || char !== "<") continue;
+
+    // A descriptor other than 0 in front of `<` is something we do not model.
+    const redirectsStdin = !/[1-9]/.test(prevChar);
+    const start = /[0-9]/.test(prevChar) ? i - 1 : i;
+
+    if (command[i + 1] === "<") {
+      if (command[i + 2] === "<") {
+        const word = readShellWord(command, i + 3);
+        if (!word || !redirectsStdin) return { kind: "unknown" };
+        if (found.kind !== "none") return { kind: "unknown" };
+        found = { kind: "string", token: word.raw, start, end: word.end };
+        i = word.end - 1;
+        continue;
+      }
+      // A heredoc: its body is the message, handled where heredocs are.
+      if (found.kind !== "none") return { kind: "unknown" };
+      found = { kind: "heredoc" };
+      i += 1;
+      continue;
+    }
+
+    const word = readShellWord(command, i + 1);
+    if (!word || !redirectsStdin) return { kind: "unknown" };
+    if (found.kind !== "none") return { kind: "unknown" };
+    found = { kind: "file", token: word.raw, start, end: word.end };
+    i = word.end - 1;
+  }
+
+  return found;
+}
+
+/**
+ * Whether the command starting at index is downstream of a pipe.
+ *
+ * It matters twice over: such a command already has its standard input spoken
+ * for, and inserting a stage that ignores that input would leave the producer
+ * writing into a pipe nobody reads.
+ */
+export function hasPrecedingPipe(command: string, startIndex: number): boolean {
+  let i = startIndex - 1;
+  while (i >= 0 && /\s/.test(command[i] ?? "")) i--;
+  return i >= 0 && command[i] === "|" && command[i - 1] !== "|";
+}
+
+/**
  * Wrap a value so the shell passes it through verbatim. Single quotes are the
  * only quoting in POSIX sh that suppresses every expansion, so an embedded
  * quote has to be closed, escaped and reopened.

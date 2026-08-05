@@ -159,30 +159,88 @@ describe("git commit with a heredoc message", () => {
   });
 });
 
-describe("messages the plugin refuses to touch", () => {
-  // Every one of these names content the plugin cannot see. Rewriting them
-  // meant reading the wrong bytes, or taking stdin away from git and
-  // committing the signature alone — with exit status 0.
+describe("git commit with a message file", () => {
+  /** Write msg.txt in a fresh repository, run the signed command, report both. */
+  async function commitFromFile(command: string, content: string, name = "msg.txt") {
+    const directory = createRepository();
+    writeFileSync(join(directory, name), content);
+    let status = 0;
+    try {
+      run(directory, await sign(command));
+    } catch (error) {
+      status = (error as { status?: number }).status ?? -1;
+    }
+    let message: string | undefined;
+    try {
+      message = commitMessage(directory);
+    } catch {
+      message = undefined;
+    }
+    return { message, status, file: readFileSync(join(directory, name), "utf8") };
+  }
+
   test.each([
-    ["a message file", "git commit -F 'commit message.txt'"],
-    ["a message file by long option", "git commit --file=message.txt"],
+    ["git commit -F msg.txt", "-F <path>"],
+    ["git commit --file=msg.txt", "--file=<path>"],
+    ["git commit -Fmsg.txt", "attached -F<path>"],
+  ])("signs %p", async (command) => {
+    const { message, file } = await commitFromFile(command, "subject\n\nbody\n");
+
+    expect(message).toBe(`subject\n\nbody\n\n${signature}\n\n`);
+    // The message the user wrote is read, never rewritten.
+    expect(file).toBe("subject\n\nbody\n");
+  });
+
+  test("keeps a message whose text looks like shell syntax", async () => {
+    const { message } = await commitFromFile("git commit -F msg.txt", "fix: a; b && c | d\n");
+
+    expect(message).toBe(`fix: a; b && c | d\n\n${signature}\n\n`);
+  });
+
+  test("does not sign a file that is already signed", async () => {
+    const { message } = await commitFromFile("git commit -F msg.txt", `subject\n\n${signature}\n`);
+
+    expect(message).toBe(`subject\n\n${signature}\n\n`);
+  });
+
+  // git refuses an empty message; appending a signature would have turned that
+  // refusal into a commit whose whole message is the signature.
+  test.each([
+    ["an empty file", ""],
+    ["a blank file", "   \n\n"],
+  ])("makes no commit from %s", async (_name, content) => {
+    const { message, status } = await commitFromFile("git commit -F msg.txt", content);
+
+    expect(message).toBeUndefined();
+    expect(status).not.toBe(0);
+  });
+
+  test("resolves the path in the shell, so expansions still work", async () => {
+    const directory = createRepository();
+    writeFileSync(join(directory, "msg.txt"), "subject\n");
+
+    run(directory, `MSGFILE=msg.txt; ${await sign('git commit -F "$MSGFILE"')}`);
+
+    expect(commitMessage(directory)).toBe(`subject\n\n${signature}\n\n`);
+  });
+
+  test("leaves a command whose input is already piped alone", async () => {
+    const command = "printf x | git commit -F msg.txt";
+
+    expect(await sign(command)).toBe(command);
+  });
+});
+
+describe("messages the plugin refuses to touch", () => {
+  // Each names content the plugin cannot reach without taking a stream away
+  // from git, which is how the message used to be lost.
+  test.each([
     ["a piped message", "printf 'subject\\n' | git commit -F-"],
     ["a redirected message", "git commit -F- < message.txt"],
     ["a here-string message", 'git commit -F- <<< "subject"'],
     ["a message file mixed with -m", 'git commit -m "subject" -F message.txt'],
   ])("returns the command unchanged for %s", async (_name, command) => {
     expect(await sign(command)).toBe(command);
-  });
-
-  test("a message file is neither read nor modified, and its commit still works", async () => {
-    const directory = createRepository();
-    const messageFile = join(directory, "commit message.txt");
-    writeFileSync(messageFile, "subject\n\nbody\n");
-
-    run(directory, await sign("git commit -F 'commit message.txt'"));
-
-    expect(commitMessage(directory)).toBe("subject\n\nbody\n\n");
-    expect(readFileSync(messageFile, "utf8")).toBe("subject\n\nbody\n");
   });
 
   test("a piped message reaches git intact", async () => {
@@ -285,10 +343,19 @@ describe("one line carrying both a commit and a pull request", () => {
     );
   });
 
-  test("still signs the pull request when the commit cannot be signed", async () => {
+  test("signs a message-file commit and the pull request body", async () => {
     const rewritten = await sign('git commit -F msg.txt && gh pr create --title t --body "hello"');
 
-    expect(rewritten).toBe(`git commit -F msg.txt && gh pr create --title t --body 'hello\n\n${signature}'`);
+    expect(rewritten).toContain("cat -- msg.txt");
+    expect(rewritten).toContain(`--body 'hello\n\n${signature}'`);
+  });
+
+  test("still signs the pull request when the commit cannot be signed", async () => {
+    const rewritten = await sign('printf x | git commit -F- && gh pr create --title t --body "hello"');
+
+    expect(rewritten).toBe(
+      `printf x | git commit -F- && gh pr create --title t --body 'hello\n\n${signature}'`,
+    );
   });
 });
 

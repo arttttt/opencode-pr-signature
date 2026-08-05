@@ -3,10 +3,13 @@
  */
 
 import { hasSignature } from "./signature";
+import { fileReader, signedMessageGroup } from "./signed-message";
 import {
   findCommandEndIndex,
   findCommandMatch,
   findHeredocBody,
+  findStdinRedirect,
+  hasPrecedingPipe,
   maskHeredocBodies,
   quoteShellArgument,
   readHeredocHeader,
@@ -25,7 +28,7 @@ import {
 type CommitMessageSource =
   | { kind: "message" }
   | { kind: "stdin"; optionEnd: number }
-  | { kind: "path" };
+  | { kind: "path"; token: string; start: number; end: number };
 
 /**
  * Work out which message option the commit carries, in any of the spellings
@@ -70,7 +73,10 @@ function findCommitMessageSource(command: string, startIndex: number): CommitMes
     if (file) {
       // -m together with -F is a git error; two -F options are ambiguous.
       if (source) return undefined;
-      source = file.value === "-" ? { kind: "stdin", optionEnd: file.end } : { kind: "path" };
+      source =
+        file.value === "-"
+          ? { kind: "stdin", optionEnd: file.end }
+          : { kind: "path", token: file.raw, start: word.start, end: file.end };
     }
   }
   return source;
@@ -133,9 +139,19 @@ export function addSignatureToGitCommitCommand(command: string, signature: strin
     return `${beforeEnd} -m ${quoteShellArgument(signature)}${separator}${afterCommand}`;
   }
 
-  // A message file: git reads it later, in a working directory we do not know,
-  // and its contents may not even exist yet. Leave the command alone.
-  if (source.kind === "path") return command;
+  // A message file: read it when the command runs, in the working directory
+  // git will use, and hand the signed text to git on standard input.
+  if (source.kind === "path") {
+    // A producer upstream expects git to read its output; a stage that ignores
+    // it would leave that producer writing into a pipe nobody drains.
+    if (hasPrecedingPipe(scan, gitCommitStart)) return command;
+    // -F <path> together with a redirect on stdin is a shape we do not model.
+    if (findStdinRedirect(scan.slice(gitCommitStart, endIndex)).kind !== "none") return command;
+
+    const group = signedMessageGroup(fileReader(source.token), signature);
+    const rewritten = commandPart.slice(0, source.start) + "-F -" + commandPart.slice(source.end);
+    return command.slice(0, gitCommitStart) + group + " | " + rewritten + command.slice(endIndex);
+  }
 
   // -F - : signable only when the text is inline, i.e. an attached heredoc.
   // A pipe or a redirect carries content produced at run time, which nothing
