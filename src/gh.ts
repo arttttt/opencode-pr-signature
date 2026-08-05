@@ -5,6 +5,7 @@
 import { hasSignature } from "./signature";
 import { signedValueSubstitution } from "./signed-message";
 import {
+  attachedValue,
   findCommandEndIndex,
   findCommandMatch,
   maskHeredocBodies,
@@ -28,9 +29,7 @@ type GhBodyOption =
   /** A body written out in the command; its text is known here. */
   | { kind: "static"; value: string; start: number; end: number }
   /** A body that only exists once the shell expands it. */
-  | { kind: "dynamic"; expression: string; start: number; end: number }
-  /** A body read from a file when the command runs. */
-  | { kind: "file"; token: string; start: number; end: number };
+  | { kind: "dynamic"; expression: string; start: number; end: number };
 
 /**
  * Locate the --body/-b value of a gh command, in any of the spellings gh
@@ -54,29 +53,27 @@ function findGhBodyOption(command: string): GhBodyOption {
         : { kind: "static", value: value.value, start: word.start, end: value.end };
     }
 
-    let inline: { value: string; raw: string } | undefined;
-    if (word.value.startsWith("--body=")) inline = { value: word.value.slice(7), raw: word.raw.slice(7) };
-    else if (word.value.startsWith("-b") && word.value.length > 2) {
-      inline = { value: word.value.slice(2), raw: word.raw.slice(2) };
+    const prefix = word.value.startsWith("--body=") ? "--body=" : word.value.startsWith("-b") ? "-b" : undefined;
+    if (prefix) {
+      const raw = attachedValue(word, prefix);
+      // The option was quoted as a whole ("--body=x"), so its prefix and its
+      // raw text no longer line up and slicing would break the command.
+      if (raw === undefined) return { kind: "unsupported" };
+      return /[$`]/.test(raw)
+        ? { kind: "dynamic", expression: raw, start: word.start, end: word.end }
+        : { kind: "static", value: word.value.slice(prefix.length), start: word.start, end: word.end };
     }
 
-    if (inline) {
-      return /[$`]/.test(inline.raw)
-        ? { kind: "dynamic", expression: inline.raw, start: word.start, end: word.end }
-        : { kind: "static", value: inline.value, start: word.start, end: word.end };
-    }
-
-    // A body read from a file: the file is read when the command runs.
-    if (word.value === "--body-file" || word.value === "-F") {
-      const file = readShellWord(command, index);
-      if (!file) return { kind: "unsupported" };
-      if (file.value === "-") return { kind: "unsupported" };
-      return { kind: "file", token: file.raw, start: word.start, end: file.end };
-    }
-    if (word.value.startsWith("--body-file=") && word.value.length > 12) {
-      const token = word.raw.slice(12);
-      if (word.value.slice(12) === "-") return { kind: "unsupported" };
-      return { kind: "file", token, start: word.start, end: word.end };
+    // A body read from a file or from standard input is not ours to rewrite.
+    // Reading it in a substitution would discard the reader's exit status, so
+    // an unreadable file would become an empty body and a successful gh run.
+    if (
+      word.value === "--body-file" ||
+      word.value === "-F" ||
+      word.value.startsWith("--body-file=") ||
+      word.value.startsWith("-F")
+    ) {
+      return { kind: "unsupported" };
     }
   }
 
@@ -122,12 +119,7 @@ export function addSignatureToGhCommand(command: string, signature: string): str
   const signed =
     body.kind === "static"
       ? quoteShellArgument(body.value.trimEnd() + "\n\n" + signature)
-      : signedValueSubstitution(
-          // A file body becomes an inline one; gh takes the text either way,
-          // and this keeps a single construction for everything it cannot see.
-          body.kind === "file" ? `"$(cat -- ${body.token})"` : body.expression,
-          signature,
-        );
+      : signedValueSubstitution(body.expression, signature);
 
   const rewritten = commandPart.slice(0, body.start) + `--body ${signed}` + commandPart.slice(body.end);
   return beforeCommand + rewritten + afterCommand;

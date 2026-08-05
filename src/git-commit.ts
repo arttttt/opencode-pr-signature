@@ -7,6 +7,7 @@ import { fileReader, signedMessageGroup } from "./signed-message";
 import {
   findCommandEndIndex,
   findCommandMatch,
+  attachedValue,
   findCommandStarts,
   findHeredocBody,
   findStdinRedirect,
@@ -87,10 +88,11 @@ function findCommitMessageSource(command: string, startIndex: number): CommitMes
       file = readShellWord(command, index);
       if (!file) return undefined;
       index = file.end;
-    } else if (word.value.startsWith("-F") && word.value.length > 2) {
-      file = { raw: word.raw.slice(2), value: word.value.slice(2), start: word.start + 2, end: word.end };
-    } else if (word.value.startsWith("--file=") && word.value.length > 7) {
-      file = { raw: word.raw.slice(7), value: word.value.slice(7), start: word.start + 7, end: word.end };
+    } else if (word.value.startsWith("-F") || word.value.startsWith("--file=")) {
+      const prefix = word.value.startsWith("--file=") ? "--file=" : "-F";
+      const raw = attachedValue(word, prefix);
+      if (raw === undefined) return undefined;
+      file = { raw, value: word.value.slice(prefix.length), start: word.start, end: word.end };
     }
 
     if (file) {

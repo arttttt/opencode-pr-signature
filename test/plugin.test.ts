@@ -473,10 +473,17 @@ describe("gh commands", () => {
     expect(body).toBe(`done ${signature}`);
   });
 
-  test("signs a body read from a file", async () => {
-    const { body } = await runGh(await sign("gh pr create --body-file msg.md"), { "msg.md": "from a file\n" });
-
-    expect(body).toBe(`from a file\n\n${signature}`);
+  // Reading the file in a substitution would discard cat's exit status, so an
+  // unreadable file would become an empty body and a gh run that reports
+  // success. Until the body can be piped in with the status intact, decline.
+  test.each([
+    ["gh pr create --body-file msg.md", "--body-file <path>"],
+    ["gh pr create --body-file=msg.md", "--body-file=<path>"],
+    ["gh pr create -F msg.md", "-F <path>"],
+    ["gh pr create -Fmsg.md", "attached -F<path>"],
+    ["gh pr create --body-file -", "--body-file -"],
+  ])("leaves %p alone rather than dropping the file's exit status", async (command) => {
+    expect(await sign(command)).toBe(command);
   });
 
   test("evaluates the user's expression exactly once", async () => {

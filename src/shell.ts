@@ -452,6 +452,22 @@ export type ShellWord = {
   end: number;
 };
 
+/**
+ * The raw text of a value attached to an option — the `msg.txt` of
+ * `-Fmsg.txt`, the `"my msg.txt"` of `--file="my msg.txt"`.
+ *
+ * Raw text is returned rather than the unquoted value so the caller can pass
+ * it back to the shell and have it expand as the user wrote it. Returns
+ * undefined when the option was quoted as a whole (`"-Fmsg.txt"`): then the
+ * prefix and the raw text no longer line up character for character, and
+ * slicing would cut a quote in half and leave the command unparseable.
+ */
+export function attachedValue(word: ShellWord, prefix: string): string | undefined {
+  if (word.value.length <= prefix.length || !word.value.startsWith(prefix)) return undefined;
+  if (!word.raw.startsWith(prefix)) return undefined;
+  return word.raw.slice(prefix.length);
+}
+
 /** Characters that end a word rather than belong to it. */
 const WORD_TERMINATORS = /[;|&<>]/;
 
