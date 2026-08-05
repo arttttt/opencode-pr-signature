@@ -28,14 +28,28 @@ Add to your OpenCode config (`~/.config/opencode/opencode.json` or project-level
 }
 ```
 
-### From Local Files
+### From a Local Checkout
 
-1. Clone or download this repository
-2. Copy `src/plugin.ts` to your OpenCode plugins directory:
-   - Global: `~/.config/opencode/plugins/pr-signature.ts`
-   - Project-level: `.opencode/plugins/pr-signature.ts`
+The plugin is several modules under `src/`, so it is installed as a package
+rather than copied as a single file:
 
-3. Restart OpenCode
+1. Clone this repository
+2. Install the checkout into your OpenCode config directory:
+
+   ```sh
+   cd ~/.config/opencode && npm install /path/to/opencode-pr-signature
+   ```
+
+3. Reference it in `opencode.json` exactly as for the published package:
+
+   ```json
+   {
+     "$schema": "https://opencode.ai/config.json",
+     "plugin": ["opencode-pr-signature"]
+   }
+   ```
+
+4. Restart OpenCode
 
 ## Usage
 

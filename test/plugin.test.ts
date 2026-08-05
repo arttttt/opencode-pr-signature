@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { addSignatureToGitCommitCommand } from "../src/plugin";
+import { addSignatureToGitCommitCommand } from "../src/git-commit";
 
 const signature = "🤖 Generated with [OpenCode](https://opencode.ai) (Test Model)";
 const directories: string[] = [];
