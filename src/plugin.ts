@@ -522,13 +522,137 @@ function hasSignature(text: string): boolean {
   return text.includes(SIGNATURE_MARKER);
 }
 
+type HeredocHeader = { delimiter: string; allowIndent: boolean };
+
+/**
+ * Read a heredoc header (`<<EOF`, `<<-'EOF'`, `<< "EOF"`) starting at index.
+ * Returns undefined for anything else, including the `<<<` herestring.
+ */
+function readHeredocHeader(command: string, index: number): { header: HeredocHeader; end: number } | undefined {
+  if (command[index] !== "<" || command[index + 1] !== "<" || command[index + 2] === "<") return undefined;
+
+  let i = index + 2;
+  const allowIndent = command[i] === "-";
+  if (allowIndent) i++;
+  while (command[i] === " " || command[i] === "\t") i++;
+
+  let delimiter = "";
+  let quote: string | undefined;
+  while (i < command.length) {
+    const char = command[i];
+    if (quote) {
+      if (char === quote) quote = undefined;
+      else delimiter += char;
+    } else if (char === "'" || char === '"') {
+      quote = char;
+    } else if (char === "\\" && i + 1 < command.length) {
+      delimiter += command[++i];
+    } else if (/[\s;|&<>()]/.test(char)) {
+      break;
+    } else {
+      delimiter += char;
+    }
+    i++;
+  }
+
+  if (quote || delimiter === "") return undefined;
+  return { header: { delimiter, allowIndent }, end: i };
+}
+
+/** Filler that carries no shell meaning; masking never changes string length. */
+const MASK_CHARACTER = "x";
+
+/**
+ * Overwrite one heredoc body — from the newline that opens it through its
+ * terminator line — and return the index just past the terminator line.
+ */
+function maskHeredocBody(command: string, masked: string[], start: number, header: HeredocHeader): number {
+  let lineStart = start + 1;
+
+  while (lineStart <= command.length) {
+    const newline = command.indexOf("\n", lineStart);
+    const lineEnd = newline === -1 ? command.length : newline;
+    const line = command.slice(lineStart, lineEnd);
+    const content = header.allowIndent ? line.replace(/^\t+/, "") : line;
+
+    if (content.replace(/\r$/, "") === header.delimiter) {
+      for (let i = start; i < lineEnd; i++) masked[i] = MASK_CHARACTER;
+      return lineEnd;
+    }
+    if (newline === -1) break;
+    lineStart = newline + 1;
+  }
+
+  // Unterminated heredoc: the rest of the string is message text.
+  for (let i = start; i < command.length; i++) masked[i] = MASK_CHARACTER;
+  return command.length;
+}
+
+/**
+ * Return a copy of the command with every heredoc body replaced by filler of
+ * the same length, so positions still map 1:1 onto the original string.
+ *
+ * Heredoc bodies are plain text, not shell syntax: without this, a commit
+ * message containing `;` or `&&` looks like a command separator, and a message
+ * mentioning `-m` looks like an option. Scanning runs on the masked copy;
+ * every slice that is returned to the caller is cut from the original.
+ */
+function maskHeredocBodies(command: string): string {
+  const masked = command.split("");
+  const pending: HeredocHeader[] = [];
+  let quote: string | undefined;
+  let i = 0;
+
+  while (i < command.length) {
+    const char = command[i];
+
+    if (quote) {
+      if (char === "\\" && quote === '"' && i + 1 < command.length) i++;
+      else if (char === quote) quote = undefined;
+      i++;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      i++;
+      continue;
+    }
+    if (char === "\\" && i + 1 < command.length) {
+      i += 2;
+      continue;
+    }
+    if (char === "<") {
+      const heredoc = readHeredocHeader(command, i);
+      if (heredoc) {
+        pending.push(heredoc.header);
+        i = heredoc.end;
+        continue;
+      }
+    }
+    // Bodies begin after the line carrying their headers, in header order.
+    if (char === "\n" && pending.length > 0) {
+      let cursor = i;
+      for (const header of pending) cursor = maskHeredocBody(command, masked, cursor, header);
+      pending.length = 0;
+      i = cursor;
+      continue;
+    }
+    i++;
+  }
+
+  return masked.join("");
+}
+
 /**
  * Find the end position of a command in a bash command string.
  * Respects quotes to avoid splitting on && or || inside quoted strings.
  *
+ * Expects a command whose heredoc bodies are already masked; call
+ * maskHeredocBodies first, or message text will be read as shell syntax.
+ *
  * @param command - The full bash command string
  * @param startIndex - Where to start searching from
- * @returns The index where command ends (before && || ; | or end of string)
+ * @returns The index where command ends (before a separator or end of string)
  */
 function findCommandEndIndex(command: string, startIndex: number): number {
   let inSingleQuote = false;
@@ -545,16 +669,13 @@ function findCommandEndIndex(command: string, startIndex: number): number {
     } else if (char === '"' && !inSingleQuote && prevChar !== "\\") {
       inDoubleQuote = !inDoubleQuote;
     } else if (!inSingleQuote && !inDoubleQuote) {
-      // Check for command separators outside of quotes
-      const remaining = command.slice(i);
-      if (
-        remaining.startsWith("&&") ||
-        remaining.startsWith("||") ||
-        remaining.startsWith(";") ||
-        remaining.startsWith("|")
-      ) {
-        return i;
-      }
+      // Everything that ends a command, not just the && || ; | separators:
+      // a newline separates as surely as a semicolon, `(` and `)` bound a
+      // subshell or substitution we must not reach across, a lone `&`
+      // backgrounds what came before, and `#` opens a comment that would
+      // swallow anything appended after it.
+      if (/[;|&\n()]/.test(char)) return i;
+      if (char === "#" && (i === startIndex || /\s/.test(prevChar))) return i;
     }
     i++;
   }
@@ -684,13 +805,16 @@ function addSignatureToHeredoc(command: string, signature: string, afterOption: 
  * copied to a temporary file so the caller's message file is never modified.
  */
 export function addSignatureToGitCommitCommand(command: string, signature: string): string {
-  const gitCommitMatch = command.match(/git\s+commit\b/i);
+  // Scan the masked copy so message text is never read as shell syntax, and
+  // slice the original so the message is never altered by scanning.
+  const scan = maskHeredocBodies(command);
+  const gitCommitMatch = scan.match(/git\s+commit\b/i);
   if (!gitCommitMatch || gitCommitMatch.index === undefined) return command;
 
   const gitCommitStart = gitCommitMatch.index;
-  const endIndex = findCommandEndIndex(command, gitCommitStart);
+  const endIndex = findCommandEndIndex(scan, gitCommitStart);
   const commandPart = command.slice(gitCommitStart, endIndex);
-  const source = findCommitMessageSource(commandPart, gitCommitMatch[0].length);
+  const source = findCommitMessageSource(scan.slice(gitCommitStart, endIndex), gitCommitMatch[0].length);
   if (!source) return command;
 
   if (source.kind === "message") {
@@ -786,11 +910,16 @@ function findGhBodyOption(command: string): GhBodyOption {
  * flag. Returns the command unchanged when the body cannot be rewritten.
  */
 function addSignatureToGhCommand(command: string, signature: string, startIndex: number): string {
-  const endIndex = findCommandEndIndex(command, startIndex);
+  const scan = maskHeredocBodies(command);
+  const endIndex = findCommandEndIndex(scan, startIndex);
 
   const commandPart = command.slice(startIndex, endIndex);
   const beforeCommand = command.slice(0, startIndex);
   const afterCommand = command.slice(endIndex);
+
+  // A heredoc inside the gh command itself (--body-file -, an inline body)
+  // carries text we would have to read to append to it. Leave it alone.
+  if (scan.slice(startIndex, endIndex) !== commandPart) return command;
 
   const body = findGhBodyOption(commandPart);
 
