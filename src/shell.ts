@@ -152,6 +152,43 @@ export function maskHeredocBodies(command: string): string {
 }
 
 /**
+ * If a command substitution starts at index, return the index just past it.
+ *
+ * `$(…)` and backticks are one unit of a command's text, not a boundary: the
+ * `(` inside `$(` opens a nested command, and treating it as a separator cuts
+ * an argument in half. Nesting and quoting inside are tracked so the matching
+ * `)` is the right one. Returns -1 when nothing starts here.
+ */
+export function skipCommandSubstitution(command: string, index: number): number {
+  if (command[index] === "`") {
+    for (let i = index + 1; i < command.length; i++) {
+      if (command[i] === "\\") i++;
+      else if (command[i] === "`") return i + 1;
+    }
+    return -1;
+  }
+
+  if (command[index] !== "$" || command[index + 1] !== "(") return -1;
+
+  let depth = 0;
+  let quote: string | undefined;
+  for (let i = index + 1; i < command.length; i++) {
+    const char = command[i];
+    if (quote) {
+      if (char === "\\" && quote === '"') i++;
+      else if (char === quote) quote = undefined;
+      continue;
+    }
+    if (char === "'" || char === '"') quote = char;
+    else if (char === "\\") i++;
+    else if (char === "(") depth++;
+    else if (char === ")" && --depth === 0) return i + 1;
+  }
+
+  return -1;
+}
+
+/**
  * Whether the character at index ends the command that precedes it.
  *
  * A newline separates as surely as a semicolon, `(` and `)` bound a subshell
@@ -191,10 +228,23 @@ export function findCommandStarts(command: string): Set<number> {
       inSingleQuote = !inSingleQuote;
     } else if (char === '"' && !inSingleQuote && prevChar !== "\\") {
       inDoubleQuote = !inDoubleQuote;
-    } else if (!inSingleQuote && !inDoubleQuote && isSeparatorAt(command, i)) {
-      atStart = true;
-      inAssignment = false;
-      continue;
+    } else if (!inSingleQuote && !inDoubleQuote) {
+      const afterExpansion = skipCommandSubstitution(command, i);
+      if (afterExpansion !== -1) {
+        // The command inside a substitution is not one of ours to rewrite.
+        if (atStart) {
+          starts.add(i);
+          atStart = false;
+          inAssignment = false;
+        }
+        i = afterExpansion - 1;
+        continue;
+      }
+      if (isSeparatorAt(command, i)) {
+        atStart = true;
+        inAssignment = false;
+        continue;
+      }
     }
 
     // `GIT_COMMITTER_DATE=… git commit …`: an assignment prefix leaves the
@@ -258,6 +308,11 @@ export function findCommandEndIndex(command: string, startIndex: number): number
     } else if (char === '"' && !inSingleQuote && prevChar !== "\\") {
       inDoubleQuote = !inDoubleQuote;
     } else if (!inSingleQuote && !inDoubleQuote) {
+      const afterExpansion = skipCommandSubstitution(command, i);
+      if (afterExpansion !== -1) {
+        i = afterExpansion;
+        continue;
+      }
       // A `#` opens a comment that would swallow anything appended after it.
       if (isSeparatorAt(command, i)) return i;
       if (char === "#" && (i === startIndex || /\s/.test(prevChar))) return i;
@@ -305,11 +360,24 @@ export function findStdinRedirect(command: string): StdinRedirect {
       inDoubleQuote = !inDoubleQuote;
       continue;
     }
-    if (inSingleQuote || inDoubleQuote || char !== "<") continue;
+    if (inSingleQuote || inDoubleQuote) continue;
 
-    // A descriptor other than 0 in front of `<` is something we do not model.
-    const redirectsStdin = !/[1-9]/.test(prevChar);
-    const start = /[0-9]/.test(prevChar) ? i - 1 : i;
+    const afterExpansion = skipCommandSubstitution(command, i);
+    if (afterExpansion !== -1) {
+      i = afterExpansion - 1;
+      continue;
+    }
+    if (char !== "<") continue;
+
+    // A digit run immediately before `<` is a file descriptor only when it
+    // stands alone; in `out1<x` those digits end a word and the redirection
+    // is still stdin's. Read the whole run — `10<` is not descriptor 0.
+    let digitsStart = i;
+    while (digitsStart > 0 && /[0-9]/.test(command[digitsStart - 1] ?? "")) digitsStart--;
+    const bareDescriptor = digitsStart < i && (digitsStart === 0 || /[\s;|&<>()]/.test(command[digitsStart - 1] ?? ""));
+    const descriptor = bareDescriptor ? command.slice(digitsStart, i) : "";
+    const redirectsStdin = !bareDescriptor || descriptor === "0";
+    const start = bareDescriptor ? digitsStart : i;
 
     if (command[i + 1] === "<") {
       if (command[i + 2] === "<") {
@@ -366,11 +434,21 @@ export type ShellWord = {
   end: number;
 };
 
-/** Read the limited shell word syntax used for command options. */
+/** Characters that end a word rather than belong to it. */
+const WORD_TERMINATORS = /[;|&<>]/;
+
+/**
+ * Read the limited shell word syntax used for command options.
+ *
+ * A redirection operator ends the word: in `-F msg.txt>out.log` the path is
+ * `msg.txt`, and swallowing the `>out.log` would redirect away the very text
+ * the caller is about to read. An unquoted `$(…)` is carried whole, because
+ * its inner `;` and `)` belong to the nested command, not to this word.
+ */
 export function readShellWord(command: string, startIndex: number): ShellWord | undefined {
   let start = startIndex;
   while (/\s/.test(command[start] ?? "")) start++;
-  if (!command[start] || /[;|&]/.test(command[start])) return undefined;
+  if (!command[start] || WORD_TERMINATORS.test(command[start])) return undefined;
 
   let value = "";
   let quote: "'" | '"' | undefined;
@@ -386,11 +464,22 @@ export function readShellWord(command: string, startIndex: number): ShellWord | 
       } else {
         value += char;
       }
-    } else if (char === "'" || char === '"') {
+      i++;
+      continue;
+    }
+
+    const afterExpansion = skipCommandSubstitution(command, i);
+    if (afterExpansion !== -1) {
+      value += command.slice(i, afterExpansion);
+      i = afterExpansion;
+      continue;
+    }
+
+    if (char === "'" || char === '"') {
       quote = char;
     } else if (char === "\\" && i + 1 < command.length) {
       value += command[++i];
-    } else if (/\s/.test(char) || /[;|&]/.test(char)) {
+    } else if (/\s/.test(char) || WORD_TERMINATORS.test(char)) {
       break;
     } else {
       value += char;
