@@ -88,7 +88,9 @@ feat: add new feature
 #### Git CLI
 - `git commit -m "message"`, including the attached forms `-m"message"` and `-mmessage`
 - `git commit --message="message"`
-- `git commit -F-` with a heredoc
+- `git commit -F message.txt` and `git commit --file=message.txt`
+- `git commit -F-` fed by a heredoc, a pipe, a redirect or a here-string
+- `git commit --amend --no-edit`
 
 #### gh CLI (GitHub CLI)
 - `gh pr create`
@@ -96,6 +98,10 @@ feat: add new feature
 - `gh pr comment`
 - `gh issue comment`
 - `gh pr review`
+
+The body is signed in every spelling gh accepts — `--body x`, `--body=x`,
+`-b x`, `-bx`, `--body-file msg.md` — including one held in a variable or
+produced by a command, such as `--body "$(cat msg.md)"`.
 
 ### Supported Models
 
@@ -121,48 +127,57 @@ Other models will be displayed with their raw ID formatted nicely.
 2. **Tool Interception**: Using the `tool.execute.before` hook, it intercepts:
    - GitHub MCP tool calls (PR/Issue creation and updates)
    - Bash commands (`git commit`, `gh pr create`, etc.)
-3. **Signature Injection**: Before the tool executes, it appends the signature:
+3. **Signature Injection**: Before the tool executes, it appends the signature.
+   Where the text is written in the command, it is edited directly:
    - For MCP tools: modifies the `body` argument
    - For `git commit -m`: adds an additional `-m` flag (git concatenates multiple `-m` with blank lines)
    - For `git commit -F-` with a heredoc: appends the signature to the heredoc body, in place
-   - For `gh` commands: appends to the existing `--body` value, or adds a `--body` flag when there is none
-4. **Duplicate Prevention**: Checks if signature already exists to avoid duplicates
+   - For a `gh --body` written out in full: rewrites that argument
+
+   Where the text only exists once the command runs — a message file, a pipe, a
+   redirect, `--amend --no-edit`, a `gh` body held in a variable — the plugin
+   adds a stage that reads the message at that moment and hands the signed
+   result on:
+
+   ```sh
+   git commit -F msg.txt
+   # becomes
+   ( … cat -- msg.txt … ) | git commit -F -
+   ```
+
+   The source is read exactly once and never written to, so a message file, a
+   producer command or a `$(…)` body behaves as it did before.
+4. **Duplicate Prevention**: Checks if signature already exists to avoid
+   duplicates — in the command for text written out, and at run time for text
+   that is not. An empty or blank message stays empty, so git still refuses
+   the commit.
 
 ## What the Plugin Will Not Sign
 
-The plugin rewrites your shell command, so it signs only what it can read in
-the command itself. Anything else is left exactly as you wrote it — the
-command then behaves as if the plugin were not installed. No error, no
-signature.
-
-This is deliberate: guessing at a commit message means committing the wrong
-one, and a missing signature is easier to live with than a lost message.
+Some commands are left exactly as you wrote them, and then behave as if the
+plugin were not installed. No error, no signature — because guessing at a
+commit message means committing the wrong one, and a missing signature is
+easier to live with than a lost message.
 
 Not signed:
 
-- **A message file** — `git commit -F message.txt`, `--file=message.txt`.
-  Git reads the file when the command runs, in a working directory the plugin
-  does not know, and its contents may not exist yet.
-- **A piped or redirected message** — `... | git commit -F-`,
-  `git commit -F- < message.txt`, `git commit -F- <<< "subject"`. The text is
-  produced at run time, and nothing can read it without taking the stream away
-  from git.
-- **A gh body the plugin cannot rewrite** — `--body-file`, or a `--body`
-  containing `$` or a backtick. Adding a second `--body` would make gh use it
-  and drop yours.
-- **A command it cannot parse with certainty** — unbalanced quotes, `-m` mixed
-  with `-F`, or a `git commit` that appears only inside another command's
-  argument.
-
-To have a multi-line message signed, use a heredoc:
-
-```sh
-git commit -F- <<'EOF'
-subject
-
-body
-EOF
-```
+- **A message you have not written yet** — `git commit` and `git commit
+  --amend` without a message option open an editor. There is nothing to sign
+  until you have typed it, and supplying a message would suppress the editor
+  you asked for.
+- **A message reused from another commit** — `-C`, `-c`, `--reuse-message`,
+  `--reedit-message`. These copy the author and the author date along with the
+  message, and moving the message onto `-F` would quietly reset both to
+  whoever is committing now.
+- **`--squash` and `--fixup`** — those messages exist only until the rebase
+  that consumes them.
+- **`git commit -F-` with nothing visible feeding standard input**, and
+  **`gh --body-file -`**, which reads standard input as well.
+- **A message file whose command is already downstream of a pipe** — the
+  producer expects git to read its output.
+- **A command the plugin cannot parse with certainty** — unbalanced quotes,
+  `-m` mixed with `-F`, more than one input redirection, or a `git commit`
+  that appears only inside another command's argument.
 
 ## Configuration
 
