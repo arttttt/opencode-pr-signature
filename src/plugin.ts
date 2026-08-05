@@ -755,7 +755,9 @@ function findCommitMessageSource(command: string, startIndex: number): CommitMes
       index = message.end;
       continue;
     }
-    if (word.value.startsWith("--message=")) {
+    // Attached forms: -m"subject", -msubject, --message=subject. git accepts
+    // all of them, so the plugin has to recognize all of them.
+    if (word.value.startsWith("--message=") || (word.value.startsWith("-m") && word.value.length > 2)) {
       if (source?.kind === "file") return undefined;
       source = { kind: "message" };
       continue;
