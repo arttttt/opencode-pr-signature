@@ -82,8 +82,11 @@ function findGhBodyOption(command: string): GhBodyOption {
 
 /**
  * Add signature to a gh CLI command: gh pr/issue create, comment or review.
- * If --body/-b exists, append the signature to its value; otherwise add the
- * flag. Returns the command unchanged when the body cannot be rewritten.
+ * A body written out in the command is rewritten in place; one that only
+ * exists once the shell expands it is wrapped in a substitution that signs it
+ * at that moment; a command with no body gets the flag added. Returns the
+ * command unchanged when the body is not ours to rewrite — read from a file
+ * or from standard input, or spelled in a way this cannot take apart safely.
  */
 export function addSignatureToGhCommand(command: string, signature: string): string {
   const scan = maskHeredocBodies(command);

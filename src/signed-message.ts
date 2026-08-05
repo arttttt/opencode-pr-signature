@@ -15,7 +15,7 @@ const MESSAGE_VARIABLE = "__opencode_message";
  * substitution, bash 3.2 — which is /bin/sh on macOS — otherwise reads the
  * `)` that closes a case pattern as the one that closes the substitution.
  */
-function signingBranches(variable: string, signature: string, separator: string): string {
+function signingBranches(variable: string, signature: string): string {
   const value = `"$${variable}"`;
   // Quoted inside the pattern so the marker's brackets stay literal text
   // rather than becoming a character class.
@@ -26,8 +26,8 @@ function signingBranches(variable: string, signature: string, separator: string)
 
   return (
     `case ${value} in ` +
-    `${alreadySigned} printf '%s${separator}' ${value} ;; ` +
-    `${worthSigning} printf '%s\\n\\n%s${separator}' ${value} ${quoteShellArgument(signature)} ;; ` +
+    `${alreadySigned} printf '%s\\n' ${value} ;; ` +
+    `${worthSigning} printf '%s\\n\\n%s\\n' ${value} ${quoteShellArgument(signature)} ;; ` +
     `(*) ;; esac`
   );
 }
@@ -49,21 +49,22 @@ function signingBranches(variable: string, signature: string, separator: string)
  * @param reader - command that writes the original message to stdout
  */
 export function signedMessageGroup(reader: string, signature: string): string {
-  return `( ${MESSAGE_VARIABLE}=$(${reader}); ${signingBranches(MESSAGE_VARIABLE, signature, "\\n")} )`;
+  return `( ${MESSAGE_VARIABLE}=$(${reader}); ${signingBranches(MESSAGE_VARIABLE, signature)} )`;
 }
 
 /**
  * Build a quoted command substitution yielding the signed text of a value the
- * plugin cannot read — a variable, a substitution, a file.
+ * plugin cannot read — a variable, or a command that produces one.
  *
  * The user's own expression is placed once, so whatever it costs to evaluate
  * is paid once, and the result arrives as a single argument however many
- * quotes, newlines or shell metacharacters it contains.
+ * quotes, newlines or shell metacharacters it contains. The trailing newline
+ * the branches print is stripped by the substitution itself.
  *
  * @param valueExpression - the right-hand side of the assignment, verbatim
  */
 export function signedValueSubstitution(valueExpression: string, signature: string): string {
-  return `"$( ${MESSAGE_VARIABLE}=${valueExpression}; ${signingBranches(MESSAGE_VARIABLE, signature, "")} )"`;
+  return `"$( ${MESSAGE_VARIABLE}=${valueExpression}; ${signingBranches(MESSAGE_VARIABLE, signature)} )"`;
 }
 
 /** Read a message file, passing the path through exactly as the user wrote it. */

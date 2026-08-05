@@ -345,7 +345,7 @@ export function findCommandEndIndex(command: string, startIndex: number): number
  * What is feeding a command's standard input, as far as its own text says.
  *
  * "none" still leaves the pipeline: a command with no redirect of its own may
- * be downstream of a `|`, which findPrecedingPipe answers separately.
+ * be downstream of a `|`, which hasPrecedingPipe answers separately.
  */
 export type StdinRedirect =
   | { kind: "none" }

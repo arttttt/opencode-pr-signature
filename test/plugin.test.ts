@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PRSignaturePlugin } from "../src/plugin";
@@ -59,14 +59,17 @@ function commitMessage(directory: string): string {
 async function runGh(
   command: string,
   files: Record<string, string> = {},
-): Promise<{ body: string; directory: string }> {
+): Promise<{ body: string | undefined; directory: string }> {
   const directory = mkdtempSync(join(tmpdir(), "opencode-pr-signature-gh-"));
   directories.push(directory);
   const bin = join(directory, "bin");
   mkdirSync(bin);
+  // Writes the --body it was handed, and records its absence separately, so a
+  // rewrite that dropped the flag cannot be mistaken for one that passed an
+  // empty body.
   writeFileSync(
     join(bin, "gh"),
-    '#!/bin/sh\nwhile [ $# -gt 0 ]; do\n  if [ "$1" = "--body" ]; then printf %s "$2" > body.out; exit 0; fi\n  shift\ndone\n: > body.out\n',
+    '#!/bin/sh\nwhile [ $# -gt 0 ]; do\n  if [ "$1" = "--body" ]; then printf %s "$2" > body.out; exit 0; fi\n  shift\ndone\nprintf no-body > absent.out\n',
   );
   chmodSync(join(bin, "gh"), 0o755);
   for (const [name, content] of Object.entries(files)) writeFileSync(join(directory, name), content);
@@ -77,6 +80,7 @@ async function runGh(
     env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
   });
 
+  if (existsSync(join(directory, "absent.out"))) return { body: undefined, directory };
   return { body: readFileSync(join(directory, "body.out"), "utf8"), directory };
 }
 
@@ -362,11 +366,13 @@ describe("git commit -F- fed by a redirect", () => {
 
   // Executed under bash rather than /bin/sh: a here-string is the user's own
   // syntax, so their shell already supports it, but dash does not.
-  test("moves a here-string onto the group, expansion intact", async () => {
+  test("signs a here-string, expansion intact", async () => {
+    const directory = createRepository();
     const rewritten = await sign('git commit -F- <<< "subject $NAME"');
 
-    expect(rewritten).toContain('<<< "subject $NAME" | git commit -F-');
-    expect(rewritten.indexOf("__opencode_message")).toBeLessThan(rewritten.indexOf("<<<"));
+    execFileSync("/bin/bash", ["-c", rewritten], { cwd: directory, env: { ...process.env, NAME: "World" } });
+
+    expect(commitMessage(directory)).toBe(`subject World\n\n${signature}\n\n`);
   });
 });
 
@@ -592,9 +598,15 @@ describe("one line carrying both a commit and a pull request", () => {
 
   test("signs a message-file commit and the pull request body", async () => {
     const rewritten = await sign('git commit -F msg.txt && gh pr create --title t --body "hello"');
+    const [commitHalf, ghHalf] = rewritten.split("&& gh ");
 
-    expect(rewritten).toContain("cat -- msg.txt");
-    expect(rewritten).toContain(`--body 'hello\n\n${signature}'`);
+    const directory = createRepository();
+    writeFileSync(join(directory, "msg.txt"), "subject\n");
+    run(directory, commitHalf!);
+    const { body } = await runGh(`gh ${ghHalf}`);
+
+    expect(commitMessage(directory)).toBe(`subject\n\n${signature}\n\n`);
+    expect(body).toBe(`hello\n\n${signature}`);
   });
 
   test("still signs the pull request when the commit cannot be signed", async () => {

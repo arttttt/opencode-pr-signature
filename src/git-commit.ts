@@ -23,10 +23,10 @@ import {
 /**
  * Where a git commit takes its message from.
  *
- * "stdin" and "path" are kept apart because only one of them is signable: an
- * inline heredoc is right there in the command string, while a path names
- * content that exists only on disk, at a working directory this plugin does
- * not know, at a time that has not arrived yet.
+ * The variants are kept apart by what it takes to read the text: "message" is
+ * written out in the command, while "stdin", "path" and "head" each name text
+ * that only exists once the command runs, and each needs a different reader in
+ * front of it.
  */
 type CommitMessageSource =
   | { kind: "message" }
@@ -257,7 +257,7 @@ function applySigningStage(
   rewritten += commandPart.slice(cursor);
 
   const group = signedMessageGroup(stage.reader, signature) + (stage.stageInput ? ` ${stage.stageInput}` : "");
-  const before = command.slice(0, stage.insertionPoint ?? gitCommitStart);
+  const before = command.slice(0, stage.insertionPoint);
   // A `$(` immediately before the stage would read as arithmetic expansion in
   // a POSIX shell, so never let the group's `(` touch what precedes it.
   const spacer = before && !/\s$/.test(before) ? " " : "";
@@ -267,8 +267,8 @@ function applySigningStage(
     spacer +
     group +
     " | " +
-    command.slice(stage.insertionPoint ?? gitCommitStart, gitCommitStart) +
-    rewritten.trimEnd() +
+    command.slice(stage.insertionPoint, gitCommitStart) +
+    rewritten +
     command.slice(endIndex)
   );
 }
