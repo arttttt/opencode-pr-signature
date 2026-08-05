@@ -593,14 +593,18 @@ function findHeredocBody(
 }
 
 /**
- * Overwrite one heredoc body — from the newline that opens it through its
- * terminator line — and return the index just past the terminator line.
+ * Overwrite one heredoc body — its text and its terminator line — and return
+ * the index just past that terminator line.
+ *
+ * The newline that opens the body is left alone: it still ends the command
+ * line that carried the header, and whatever follows on that line, such as
+ * `&& gh pr create`, is a real command that must stay visible.
  */
 function maskHeredocBody(command: string, masked: string[], start: number, header: HeredocHeader): number {
   const body = findHeredocBody(command, start, header);
   // An unterminated heredoc swallows the rest of the string as message text.
   const end = body ? body.delimiterLineEnd : command.length;
-  for (let i = start; i < end; i++) masked[i] = MASK_CHARACTER;
+  for (let i = start + 1; i < end; i++) masked[i] = MASK_CHARACTER;
   return end;
 }
 
@@ -689,6 +693,7 @@ function findCommandStarts(command: string): Set<number> {
   let inSingleQuote = false;
   let inDoubleQuote = false;
   let atStart = true;
+  let inAssignment = false;
 
   for (let i = 0; i < command.length; i++) {
     const char = command[i];
@@ -700,7 +705,15 @@ function findCommandStarts(command: string): Set<number> {
       inDoubleQuote = !inDoubleQuote;
     } else if (!inSingleQuote && !inDoubleQuote && isSeparatorAt(command, i)) {
       atStart = true;
+      inAssignment = false;
       continue;
+    }
+
+    // `GIT_COMMITTER_DATE=… git commit …`: an assignment prefix leaves the
+    // word after it still in command position.
+    if (inAssignment && !inSingleQuote && !inDoubleQuote && /\s/.test(char)) {
+      atStart = true;
+      inAssignment = false;
     }
 
     if (!atStart || /\s/.test(char)) continue;
@@ -708,13 +721,8 @@ function findCommandStarts(command: string): Set<number> {
     starts.add(i);
     atStart = false;
 
-    // `GIT_COMMITTER_DATE=… git commit …`: an assignment prefix leaves the
-    // word after it still in command position.
     const word = readShellWord(command, i);
-    if (word && /^[A-Za-z_][A-Za-z0-9_]*=/.test(word.value)) {
-      atStart = true;
-      i = word.end - 1;
-    }
+    if (word && /^[A-Za-z_][A-Za-z0-9_]*=/.test(word.value)) inAssignment = true;
   }
 
   return starts;
@@ -886,10 +894,13 @@ function findCommitMessageSource(command: string, startIndex: number): CommitMes
 }
 
 /**
- * Append the signature to the heredoc attached to a `-F -` option, in the
- * command's own text. Returns the command unchanged when the body is already
- * signed, and undefined when there is no heredoc to sign — a pipe, a redirect
- * or an unterminated heredoc all land there.
+ * Append the signature to the heredoc attached to a `-F -` option.
+ *
+ * Takes the whole command and an absolute offset, because a heredoc body
+ * lives past the end of the command that owns it — after the newline, and
+ * after anything else on that line. Returns the command unchanged when the
+ * body is already signed, and undefined when there is no heredoc to sign: a
+ * pipe, a redirect or an unterminated heredoc all land there.
  */
 function addSignatureToHeredoc(command: string, signature: string, afterOption: number): string | undefined {
   // The header has to sit on the option's own line; past that newline the
@@ -946,9 +957,7 @@ export function addSignatureToGitCommitCommand(command: string, signature: strin
   // -F - : signable only when the text is inline, i.e. an attached heredoc.
   // A pipe or a redirect carries content produced at run time, which nothing
   // here can read without taking the stream away from git.
-  const heredocCommand = addSignatureToHeredoc(commandPart, signature, source.optionEnd);
-  if (!heredocCommand) return command;
-  return command.slice(0, gitCommitStart) + heredocCommand + command.slice(endIndex);
+  return addSignatureToHeredoc(command, signature, gitCommitStart + source.optionEnd) ?? command;
 }
 
 /** gh commands that carry a body we can sign. */
