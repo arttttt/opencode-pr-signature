@@ -3,6 +3,7 @@
  */
 
 import { hasSignature } from "./signature";
+import { signedValueSubstitution } from "./signed-message";
 import {
   findCommandEndIndex,
   findCommandMatch,
@@ -24,7 +25,12 @@ const GH_COMMAND_PATTERN = /gh\s+(pr|issue)\s+(create|comment|review)\b/i;
 type GhBodyOption =
   | { kind: "absent" }
   | { kind: "unsupported" }
-  | { kind: "present"; value: string; start: number; end: number };
+  /** A body written out in the command; its text is known here. */
+  | { kind: "static"; value: string; start: number; end: number }
+  /** A body that only exists once the shell expands it. */
+  | { kind: "dynamic"; expression: string; start: number; end: number }
+  /** A body read from a file when the command runs. */
+  | { kind: "file"; token: string; start: number; end: number };
 
 /**
  * Locate the --body/-b value of a gh command, in any of the spellings gh
@@ -43,24 +49,34 @@ function findGhBodyOption(command: string): GhBodyOption {
     if (word.value === "--body" || word.value === "-b") {
       const value = readShellWord(command, index);
       if (!value) return { kind: "unsupported" };
-      if (/[$`]/.test(value.raw)) return { kind: "unsupported" };
-      return { kind: "present", value: value.value, start: word.start, end: value.end };
+      return /[$`]/.test(value.raw)
+        ? { kind: "dynamic", expression: value.raw, start: word.start, end: value.end }
+        : { kind: "static", value: value.value, start: word.start, end: value.end };
     }
 
-    let inline: { value: string; offset: number } | undefined;
-    if (word.value.startsWith("--body=")) inline = { value: word.value.slice(7), offset: 7 };
+    let inline: { value: string; raw: string } | undefined;
+    if (word.value.startsWith("--body=")) inline = { value: word.value.slice(7), raw: word.raw.slice(7) };
     else if (word.value.startsWith("-b") && word.value.length > 2) {
-      inline = { value: word.value.slice(2), offset: 2 };
+      inline = { value: word.value.slice(2), raw: word.raw.slice(2) };
     }
 
     if (inline) {
-      if (/[$`]/.test(word.raw.slice(inline.offset))) return { kind: "unsupported" };
-      return { kind: "present", value: inline.value, start: word.start, end: word.end };
+      return /[$`]/.test(inline.raw)
+        ? { kind: "dynamic", expression: inline.raw, start: word.start, end: word.end }
+        : { kind: "static", value: inline.value, start: word.start, end: word.end };
     }
 
-    // A body read from a file or from stdin is not ours to rewrite.
-    if (word.value === "--body-file" || word.value.startsWith("--body-file=") || word.value === "-F") {
-      return { kind: "unsupported" };
+    // A body read from a file: the file is read when the command runs.
+    if (word.value === "--body-file" || word.value === "-F") {
+      const file = readShellWord(command, index);
+      if (!file) return { kind: "unsupported" };
+      if (file.value === "-") return { kind: "unsupported" };
+      return { kind: "file", token: file.raw, start: word.start, end: file.end };
+    }
+    if (word.value.startsWith("--body-file=") && word.value.length > 12) {
+      const token = word.raw.slice(12);
+      if (word.value.slice(12) === "-") return { kind: "unsupported" };
+      return { kind: "file", token, start: word.start, end: word.end };
     }
   }
 
@@ -103,7 +119,16 @@ export function addSignatureToGhCommand(command: string, signature: string): str
 
   // Real newlines: gh receives the body as one shell argument, where a
   // literal "\n" would stay two characters.
-  const signed = quoteShellArgument(body.value.trimEnd() + "\n\n" + signature);
+  const signed =
+    body.kind === "static"
+      ? quoteShellArgument(body.value.trimEnd() + "\n\n" + signature)
+      : signedValueSubstitution(
+          // A file body becomes an inline one; gh takes the text either way,
+          // and this keeps a single construction for everything it cannot see.
+          body.kind === "file" ? `"$(cat -- ${body.token})"` : body.expression,
+          signature,
+        );
+
   const rewritten = commandPart.slice(0, body.start) + `--body ${signed}` + commandPart.slice(body.end);
   return beforeCommand + rewritten + afterCommand;
 }

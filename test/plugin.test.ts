@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PRSignaturePlugin } from "../src/plugin";
@@ -50,6 +50,34 @@ function createRepository(): string {
 
 function commitMessage(directory: string): string {
   return run(directory, "git log -1 --format=%B");
+}
+
+/**
+ * Run a gh command against a stub `gh` that reports the --body it was handed,
+ * so the generated shell is verified by execution without the real CLI.
+ */
+async function runGh(
+  command: string,
+  files: Record<string, string> = {},
+): Promise<{ body: string; directory: string }> {
+  const directory = mkdtempSync(join(tmpdir(), "opencode-pr-signature-gh-"));
+  directories.push(directory);
+  const bin = join(directory, "bin");
+  mkdirSync(bin);
+  writeFileSync(
+    join(bin, "gh"),
+    '#!/bin/sh\nwhile [ $# -gt 0 ]; do\n  if [ "$1" = "--body" ]; then printf %s "$2" > body.out; exit 0; fi\n  shift\ndone\n: > body.out\n',
+  );
+  chmodSync(join(bin, "gh"), 0o755);
+  for (const [name, content] of Object.entries(files)) writeFileSync(join(directory, name), content);
+
+  execFileSync("/bin/sh", ["-c", command], {
+    cwd: directory,
+    encoding: "utf8",
+    env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+  });
+
+  return { body: readFileSync(join(directory, "body.out"), "utf8"), directory };
 }
 
 /** Rewrite, execute for real, and report the message git actually stored. */
@@ -432,12 +460,43 @@ describe("gh commands", () => {
     );
   });
 
-  // Adding a second --body would make gh use ours and drop the user's text.
-  test.each([
-    ['gh pr create --body "$PR_BODY"', "a body from a variable"],
-    ['gh pr create --body "$(cat msg.md)"', "a body from a substitution"],
-    ["gh pr create --body-file msg.md", "a body from a file"],
-  ])("refuses %p rather than replacing it", async (command) => {
+  test("signs a body held in a variable, without re-quoting it", async () => {
+    const { body } = await runGh(`PR_BODY='hello there'; ${await sign('gh pr create --body "$PR_BODY"')}`);
+
+    expect(body).toBe(`hello there\n\n${signature}`);
+  });
+
+  test("does not sign a variable that already carries the signature", async () => {
+    const command = await sign('gh pr create --body "$PR_BODY"');
+    const { body } = await runGh(`PR_BODY='done ${signature}'; ${command}`);
+
+    expect(body).toBe(`done ${signature}`);
+  });
+
+  test("signs a body read from a file", async () => {
+    const { body } = await runGh(await sign("gh pr create --body-file msg.md"), { "msg.md": "from a file\n" });
+
+    expect(body).toBe(`from a file\n\n${signature}`);
+  });
+
+  test("evaluates the user's expression exactly once", async () => {
+    const { body, directory } = await runGh(await sign('gh pr create --body "$(sh ./produce.sh)"'), {
+      "produce.sh": 'echo call >> calls.log\nprintf "%s" "from a command"\n',
+    });
+
+    expect(body).toBe(`from a command\n\n${signature}`);
+    expect(readFileSync(join(directory, "calls.log"), "utf8")).toBe("call\n");
+  });
+
+  test("a body that expands to nothing stays empty", async () => {
+    const { body } = await runGh(`PR_BODY=''; ${await sign('gh pr create --body "$PR_BODY"')}`);
+
+    expect(body).toBe("");
+  });
+
+  test("still refuses a body it cannot name", async () => {
+    const command = "gh pr create --body-file -";
+
     expect(await sign(command)).toBe(command);
   });
 
