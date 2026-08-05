@@ -231,13 +231,55 @@ describe("git commit with a message file", () => {
   });
 });
 
+describe("git commit -F- fed by a redirect", () => {
+  test.each([
+    ["git commit -F- < msg.txt", "spaced"],
+    ["git commit -F- <msg.txt", "unspaced"],
+    ["git commit -F- 0< msg.txt", "with an explicit descriptor"],
+  ])("signs %p", async (command) => {
+    const directory = createRepository();
+    writeFileSync(join(directory, "msg.txt"), "subject\n\nbody\n");
+
+    run(directory, await sign(command));
+
+    expect(commitMessage(directory)).toBe(`subject\n\nbody\n\n${signature}\n\n`);
+    expect(readFileSync(join(directory, "msg.txt"), "utf8")).toBe("subject\n\nbody\n");
+  });
+
+  test("keeps an output redirection on the command it belongs to", async () => {
+    const directory = createRepository();
+    writeFileSync(join(directory, "msg.txt"), "subject\n");
+
+    run(directory, await sign("git commit -F- < msg.txt > out.log"));
+
+    expect(commitMessage(directory)).toBe(`subject\n\n${signature}\n\n`);
+    expect(readFileSync(join(directory, "out.log"), "utf8")).toContain("subject");
+  });
+
+  test("makes no commit when the redirected file is empty", async () => {
+    const directory = createRepository();
+    writeFileSync(join(directory, "msg.txt"), "");
+    const rewritten = await sign("git commit -F- < msg.txt");
+
+    expect(() => run(directory, rewritten)).toThrow();
+    expect(() => commitMessage(directory)).toThrow();
+  });
+
+  // Executed under bash rather than /bin/sh: a here-string is the user's own
+  // syntax, so their shell already supports it, but dash does not.
+  test("moves a here-string onto the group, expansion intact", async () => {
+    const rewritten = await sign('git commit -F- <<< "subject $NAME"');
+
+    expect(rewritten).toContain('<<< "subject $NAME" | git commit -F-');
+    expect(rewritten.indexOf("__opencode_message")).toBeLessThan(rewritten.indexOf("<<<"));
+  });
+});
+
 describe("messages the plugin refuses to touch", () => {
   // Each names content the plugin cannot reach without taking a stream away
   // from git, which is how the message used to be lost.
   test.each([
     ["a piped message", "printf 'subject\\n' | git commit -F-"],
-    ["a redirected message", "git commit -F- < message.txt"],
-    ["a here-string message", 'git commit -F- <<< "subject"'],
     ["a message file mixed with -m", 'git commit -m "subject" -F message.txt'],
   ])("returns the command unchanged for %s", async (_name, command) => {
     expect(await sign(command)).toBe(command);

@@ -3,7 +3,7 @@
  */
 
 import { hasSignature } from "./signature";
-import { fileReader, signedMessageGroup } from "./signed-message";
+import { fileReader, signedMessageGroup, stdinReader } from "./signed-message";
 import {
   findCommandEndIndex,
   findCommandMatch,
@@ -153,8 +153,23 @@ export function addSignatureToGitCommitCommand(command: string, signature: strin
     return command.slice(0, gitCommitStart) + group + " | " + rewritten + command.slice(endIndex);
   }
 
-  // -F - : signable only when the text is inline, i.e. an attached heredoc.
-  // A pipe or a redirect carries content produced at run time, which nothing
-  // here can read without taking the stream away from git.
-  return addSignatureToHeredoc(command, signature, gitCommitStart + source.optionEnd) ?? command;
+  // -F - with an attached heredoc: the text is right there, edit it in place.
+  const heredocCommand = addSignatureToHeredoc(command, signature, gitCommitStart + source.optionEnd);
+  if (heredocCommand) return heredocCommand;
+
+  // Otherwise the message arrives on standard input. Move whatever feeds it
+  // onto the group, so the group reads exactly what git would have read and
+  // git reads the signed result.
+  const redirect = findStdinRedirect(scan.slice(gitCommitStart, endIndex));
+  if (redirect.kind !== "file" && redirect.kind !== "string") return command;
+
+  const operator = redirect.kind === "file" ? "<" : "<<<";
+  const group = signedMessageGroup(stdinReader(), signature);
+  const withoutRedirect = (commandPart.slice(0, redirect.start) + commandPart.slice(redirect.end)).trimEnd();
+
+  return (
+    command.slice(0, gitCommitStart) +
+    `${group} ${operator} ${redirect.token} | ${withoutRedirect}` +
+    command.slice(endIndex)
+  );
 }
