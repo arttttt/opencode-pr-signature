@@ -28,14 +28,28 @@ Add to your OpenCode config (`~/.config/opencode/opencode.json` or project-level
 }
 ```
 
-### From Local Files
+### From a Local Checkout
 
-1. Clone or download this repository
-2. Copy `src/plugin.ts` to your OpenCode plugins directory:
-   - Global: `~/.config/opencode/plugins/pr-signature.ts`
-   - Project-level: `.opencode/plugins/pr-signature.ts`
+The plugin is several modules under `src/`, so it is installed as a package
+rather than copied as a single file:
 
-3. Restart OpenCode
+1. Clone this repository
+2. Install the checkout into your OpenCode config directory:
+
+   ```sh
+   cd ~/.config/opencode && npm install /path/to/opencode-pr-signature
+   ```
+
+3. Reference it in `opencode.json` exactly as for the published package:
+
+   ```json
+   {
+     "$schema": "https://opencode.ai/config.json",
+     "plugin": ["opencode-pr-signature"]
+   }
+   ```
+
+4. Restart OpenCode
 
 ## Usage
 
@@ -72,8 +86,9 @@ feat: add new feature
 - `MCP_DOCKER_update_issue`
 
 #### Git CLI
-- `git commit -m "message"`
+- `git commit -m "message"`, including the attached forms `-m"message"` and `-mmessage`
 - `git commit --message="message"`
+- `git commit -F-` with a heredoc
 
 #### gh CLI (GitHub CLI)
 - `gh pr create`
@@ -108,9 +123,46 @@ Other models will be displayed with their raw ID formatted nicely.
    - Bash commands (`git commit`, `gh pr create`, etc.)
 3. **Signature Injection**: Before the tool executes, it appends the signature:
    - For MCP tools: modifies the `body` argument
-   - For `git commit`: adds an additional `-m` flag (git concatenates multiple `-m` with blank lines)
-   - For `gh` commands: appends to `--body` or adds new `--body` flag
+   - For `git commit -m`: adds an additional `-m` flag (git concatenates multiple `-m` with blank lines)
+   - For `git commit -F-` with a heredoc: appends the signature to the heredoc body, in place
+   - For `gh` commands: appends to the existing `--body` value, or adds a `--body` flag when there is none
 4. **Duplicate Prevention**: Checks if signature already exists to avoid duplicates
+
+## What the Plugin Will Not Sign
+
+The plugin rewrites your shell command, so it signs only what it can read in
+the command itself. Anything else is left exactly as you wrote it — the
+command then behaves as if the plugin were not installed. No error, no
+signature.
+
+This is deliberate: guessing at a commit message means committing the wrong
+one, and a missing signature is easier to live with than a lost message.
+
+Not signed:
+
+- **A message file** — `git commit -F message.txt`, `--file=message.txt`.
+  Git reads the file when the command runs, in a working directory the plugin
+  does not know, and its contents may not exist yet.
+- **A piped or redirected message** — `... | git commit -F-`,
+  `git commit -F- < message.txt`, `git commit -F- <<< "subject"`. The text is
+  produced at run time, and nothing can read it without taking the stream away
+  from git.
+- **A gh body the plugin cannot rewrite** — `--body-file`, or a `--body`
+  containing `$` or a backtick. Adding a second `--body` would make gh use it
+  and drop yours.
+- **A command it cannot parse with certainty** — unbalanced quotes, `-m` mixed
+  with `-F`, or a `git commit` that appears only inside another command's
+  argument.
+
+To have a multi-line message signed, use a heredoc:
+
+```sh
+git commit -F- <<'EOF'
+subject
+
+body
+EOF
+```
 
 ## Configuration
 
@@ -124,7 +176,13 @@ bun install
 
 # Type check
 bun run typecheck
+
+# Run the tests
+bun test
 ```
+
+The tests execute the rewritten commands for real, in throwaway git
+repositories, through `/bin/sh` — they need `git` and a POSIX shell on PATH.
 
 ## License
 
