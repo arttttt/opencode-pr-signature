@@ -500,17 +500,26 @@ function formatModelString(modelId: string): string {
 }
 
 /**
+ * The part of the signature that never varies. Every "is this already signed?"
+ * check must use this one string, so changing the signature text can never
+ * leave a stale copy behind that silently stops recognizing our own output.
+ */
+const SIGNATURE_MARKER = "Generated with [OpenCode]";
+
+const SIGNATURE_URL = "https://opencode.ai";
+
+/**
  * Generate signature
  */
 function generateSignature(modelName: string): string {
-  return `🤖 Generated with [OpenCode](https://opencode.ai) (${modelName})`;
+  return `🤖 ${SIGNATURE_MARKER}(${SIGNATURE_URL}) (${modelName})`;
 }
 
 /**
  * Check if text already contains OpenCode signature
  */
 function hasSignature(text: string): boolean {
-  return text.includes("Generated with [OpenCode]");
+  return text.includes(SIGNATURE_MARKER);
 }
 
 /**
@@ -705,7 +714,7 @@ export function addSignatureToGitCommitCommand(command: string, signature: strin
   const readMessage = source.value === "-"
     ? `cat >"$${tempFile}"`
     : `cat -- ${quoteShellArgument(source.value)} >"$${tempFile}"`;
-  const marker = quoteShellArgument("Generated with [OpenCode]");
+  const marker = quoteShellArgument(SIGNATURE_MARKER);
   const quotedSignature = quoteShellArgument(signature);
   const wrapper = `( ${tempFile}=$(mktemp "\${TMPDIR:-/tmp}/opencode-pr-signature.XXXXXX") || exit; trap 'rm -f -- "$${tempFile}"' 0 HUP INT TERM; ${readMessage} || exit; if ! grep -Fq -- ${marker} "$${tempFile}"; then printf '\\n\\n%s\\n' ${quotedSignature} >>"$${tempFile}" || exit; fi; ${rewrittenCommit} )`;
   const afterCommand = command.slice(endIndex);
