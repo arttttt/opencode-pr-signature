@@ -99,9 +99,10 @@ feat: add new feature
 - `gh issue comment`
 - `gh pr review`
 
-The body is signed in every spelling gh accepts — `--body x`, `--body=x`,
-`-b x`, `-bx`, `--body-file msg.md` — including one held in a variable or
-produced by a command, such as `--body "$(cat msg.md)"`.
+The body is signed whether it is written out — `--body x`, `--body=x`, `-b x`,
+`-bx` — or only produced when the command runs, as in `--body "$PR_BODY"` or
+`--body "$(cat msg.md)"`. A body read from a file with `--body-file` is not
+signed; see below.
 
 ### Supported Models
 
@@ -143,10 +144,16 @@ Other models will be displayed with their raw ID formatted nicely.
    git commit -F msg.txt
    # becomes
    ( … cat -- msg.txt … ) | git commit -F -
+
+   gh pr create --body "$PR_BODY"
+   # becomes
+   gh pr create --body "$( … "$PR_BODY" … )"
    ```
 
    The source is read exactly once and never written to, so a message file, a
-   producer command or a `$(…)` body behaves as it did before.
+   producer command or a `$(…)` body behaves as it did before. A commit whose
+   message arrives on standard input keeps whatever was feeding it: the
+   redirection or pipe moves onto the stage, and git reads the stage.
 4. **Duplicate Prevention**: Checks if signature already exists to avoid
    duplicates — in the command for text written out, and at run time for text
    that is not. An empty or blank message stays empty, so git still refuses
@@ -171,13 +178,23 @@ Not signed:
   whoever is committing now.
 - **`--squash` and `--fixup`** — those messages exist only until the rebase
   that consumes them.
+- **A message git would refuse anyway** — `git commit -m ""`. Signing it would
+  turn the refusal into a commit whose whole message is the signature.
+- **A `gh --body-file`** — reading the file inside the argument would discard
+  whether the read succeeded, so a mistyped filename would become an empty
+  body and a `gh` run that reported success. Use `--body "$(cat msg.md)"`,
+  which is signed.
 - **`git commit -F-` with nothing visible feeding standard input**, and
   **`gh --body-file -`**, which reads standard input as well.
 - **A message file whose command is already downstream of a pipe** — the
   producer expects git to read its output.
-- **A command the plugin cannot parse with certainty** — unbalanced quotes,
-  `-m` mixed with `-F`, more than one input redirection, or a `git commit`
-  that appears only inside another command's argument.
+- **A path that names more than one file** — `git commit -F *.txt`. git takes
+  the first match as the message and the rest as pathspecs; one reader cannot
+  stand in for that.
+- **A command the plugin cannot parse with certainty** — unbalanced quotes, an
+  option quoted as a whole (`"-Fmsg.txt"`), `-m` mixed with `-F`, more than one
+  input redirection, a redirection of a descriptor other than standard input,
+  or a `git commit` that appears only inside another command's argument.
 
 ## Configuration
 
