@@ -3,10 +3,11 @@
  */
 
 import { hasSignature } from "./signature";
-import { commitReader, fileReader, signedMessageGroup, stdinReader } from "./signed-message";
+import { fileReader, signedMessageGroup } from "./signed-message";
 import {
   findCommandEndIndex,
   findCommandMatch,
+  findCommandStarts,
   findHeredocBody,
   findStdinRedirect,
   hasPrecedingPipe,
@@ -136,13 +137,126 @@ function addSignatureToHeredoc(command: string, signature: string, afterOption: 
   return undefined;
 }
 
+/** One edit to the git commit command's own text. */
+type SegmentEdit = { start: number; end: number; text: string };
+
+/**
+ * Everything needed to put a signing stage in front of one git commit: what
+ * reads the message, how the command changes to take it on standard input,
+ * and what feeds the stage itself.
+ */
+type SigningStage = {
+  reader: string;
+  edits: SegmentEdit[];
+  /**
+   * Where the stage goes. Not the git commit itself: an assignment prefix
+   * belongs to the command, and `VAR=x ( … ) | cmd` is a syntax error.
+   */
+  insertionPoint: number;
+  /** A redirection moved off the command and onto the stage. */
+  stageInput?: string;
+};
+
+/**
+ * Decide how to sign a message that is not written out in the command, or
+ * return undefined to leave the command alone.
+ *
+ * The guards live here rather than in each caller, so every source answers the
+ * same questions: is this command already fed by something, and is there
+ * exactly one thing feeding it?
+ */
+function planSigningStage(
+  scan: string,
+  command: string,
+  gitCommitStart: number,
+  endIndex: number,
+  afterGitCommit: number,
+  source: CommitMessageSource,
+): SigningStage | undefined {
+  const insertionPoint = findCommandStarts(scan).get(gitCommitStart) ?? gitCommitStart;
+  const piped = hasPrecedingPipe(scan, insertionPoint);
+  const redirect = findStdinRedirect(scan.slice(gitCommitStart, endIndex));
+
+  // A message of its own: nothing else may already be feeding this command.
+  if (source.kind === "path" || source.kind === "head") {
+    if (piped || redirect.kind !== "none") return undefined;
+    return source.kind === "path"
+      ? {
+          reader: fileReader(source.token),
+          edits: [{ start: source.start, end: source.end, text: "-F -" }],
+          insertionPoint,
+        }
+      : {
+          reader: "git log -1 --format=%B HEAD",
+          // Insert next to the subcommand, ahead of any `--`, past which git
+          // reads every word as a pathspec rather than an option.
+          edits: [{ start: afterGitCommit, end: afterGitCommit, text: " -F -" }],
+          insertionPoint,
+        };
+  }
+
+  // -F - : the message is on standard input, so the stage takes over whatever
+  // was feeding it and git reads the stage.
+  if (redirect.kind === "file" || redirect.kind === "string") {
+    const operator = redirect.kind === "file" ? "<" : "<<<";
+    return {
+      reader: "cat",
+      edits: [{ start: redirect.start, end: redirect.end, text: "" }],
+      insertionPoint,
+      stageInput: `${operator} ${redirect.token}`,
+    };
+  }
+  if (redirect.kind === "none" && piped) return { reader: "cat", edits: [], insertionPoint };
+
+  // Nothing visible feeds standard input, so there is no message to sign.
+  return undefined;
+}
+
+/**
+ * Splice the stage into the command: edits to the command's own text, then the
+ * stage placed where a pipeline may legally begin.
+ */
+function applySigningStage(
+  command: string,
+  gitCommitStart: number,
+  endIndex: number,
+  stage: SigningStage,
+  signature: string,
+): string {
+  const commandPart = command.slice(gitCommitStart, endIndex);
+
+  let rewritten = "";
+  let cursor = 0;
+  for (const edit of [...stage.edits].sort((a, b) => a.start - b.start)) {
+    rewritten += commandPart.slice(cursor, edit.start) + edit.text;
+    cursor = edit.end;
+  }
+  rewritten += commandPart.slice(cursor);
+
+  const group = signedMessageGroup(stage.reader, signature) + (stage.stageInput ? ` ${stage.stageInput}` : "");
+  const before = command.slice(0, stage.insertionPoint ?? gitCommitStart);
+  // A `$(` immediately before the stage would read as arithmetic expansion in
+  // a POSIX shell, so never let the group's `(` touch what precedes it.
+  const spacer = before && !/\s$/.test(before) ? " " : "";
+
+  return (
+    before +
+    spacer +
+    group +
+    " | " +
+    command.slice(stage.insertionPoint ?? gitCommitStart, gitCommitStart) +
+    rewritten.trimEnd() +
+    command.slice(endIndex)
+  );
+}
+
 /**
  * Add a signature to a single git commit command.
  *
- * Signs the two message forms whose text is visible in the command itself:
- * -m in any spelling, and -F - fed by an inline heredoc. Every other form —
- * a message file, a pipe, a redirect — is left exactly as the user wrote it,
- * because signing it would mean guessing at content this plugin cannot see.
+ * Text written out in the command — `-m` in any spelling, a `-F -` heredoc —
+ * is edited in place. A message that only exists once the command runs gets a
+ * signing stage piped in front of it. A command whose message this plugin
+ * cannot reach at all is returned exactly as the user wrote it.
  */
 export function addSignatureToGitCommitCommand(command: string, signature: string): string {
   // Scan the masked copy so message text is never read as shell syntax, and
@@ -165,61 +279,15 @@ export function addSignatureToGitCommitCommand(command: string, signature: strin
     return `${beforeEnd} -m ${quoteShellArgument(signature)}${separator}${afterCommand}`;
   }
 
-  // --amend --no-edit: the message is HEAD's, so read it back and amend with
-  // the signed text. git keeps the original author and author date either way.
-  if (source.kind === "head") {
-    if (hasPrecedingPipe(scan, gitCommitStart)) return command;
-    if (findStdinRedirect(scan.slice(gitCommitStart, endIndex)).kind !== "none") return command;
-
-    const group = signedMessageGroup(commitReader("HEAD"), signature);
-    return (
-      command.slice(0, gitCommitStart) +
-      `${group} | ${commandPart.trimEnd()} -F -` +
-      command.slice(endIndex)
-    );
+  // -F - with an attached heredoc: the text is right there, edit it in place,
+  // no stage needed.
+  if (source.kind === "stdin") {
+    const heredocCommand = addSignatureToHeredoc(command, signature, gitCommitStart + source.optionEnd);
+    if (heredocCommand) return heredocCommand;
   }
 
-  // A message file: read it when the command runs, in the working directory
-  // git will use, and hand the signed text to git on standard input.
-  if (source.kind === "path") {
-    // A producer upstream expects git to read its output; a stage that ignores
-    // it would leave that producer writing into a pipe nobody drains.
-    if (hasPrecedingPipe(scan, gitCommitStart)) return command;
-    // -F <path> together with a redirect on stdin is a shape we do not model.
-    if (findStdinRedirect(scan.slice(gitCommitStart, endIndex)).kind !== "none") return command;
+  const stage = planSigningStage(scan, command, gitCommitStart, endIndex, gitCommitMatch[0].length, source);
+  if (!stage) return command;
 
-    const group = signedMessageGroup(fileReader(source.token), signature);
-    const rewritten = commandPart.slice(0, source.start) + "-F -" + commandPart.slice(source.end);
-    return command.slice(0, gitCommitStart) + group + " | " + rewritten + command.slice(endIndex);
-  }
-
-  // -F - with an attached heredoc: the text is right there, edit it in place.
-  const heredocCommand = addSignatureToHeredoc(command, signature, gitCommitStart + source.optionEnd);
-  if (heredocCommand) return heredocCommand;
-
-  // Otherwise the message arrives on standard input. Move whatever feeds it
-  // onto the group, so the group reads exactly what git would have read and
-  // git reads the signed result.
-  const redirect = findStdinRedirect(scan.slice(gitCommitStart, endIndex));
-  const group = signedMessageGroup(stdinReader(), signature);
-
-  if (redirect.kind === "file" || redirect.kind === "string") {
-    const operator = redirect.kind === "file" ? "<" : "<<<";
-    const withoutRedirect = (commandPart.slice(0, redirect.start) + commandPart.slice(redirect.end)).trimEnd();
-
-    return (
-      command.slice(0, gitCommitStart) +
-      `${group} ${operator} ${redirect.token} | ${withoutRedirect}` +
-      command.slice(endIndex)
-    );
-  }
-
-  // Fed by a pipeline: slot the group in between, where it reads the producer
-  // and git reads it.
-  if (redirect.kind === "none" && hasPrecedingPipe(scan, gitCommitStart)) {
-    return command.slice(0, gitCommitStart) + `${group} | ${commandPart}` + command.slice(endIndex);
-  }
-
-  // Nothing visible feeds standard input, so there is no message to sign.
-  return command;
+  return applySigningStage(command, gitCommitStart, endIndex, stage, signature);
 }

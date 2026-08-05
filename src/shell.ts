@@ -213,12 +213,17 @@ function isSeparatorAt(command: string, index: number): boolean {
  * argument — `echo "run git commit -m x"` — and rewriting it would append
  * options to whatever command really is running.
  */
-export function findCommandStarts(command: string): Set<number> {
-  const starts = new Set<number>();
+export function findCommandStarts(command: string): Map<number, number> {
+  const starts = new Map<number, number>();
   let inSingleQuote = false;
   let inDoubleQuote = false;
   let atStart = true;
   let inAssignment = false;
+  // Where the whole simple command begins, assignment prefix included. A new
+  // pipeline stage may only be inserted there: `VAR=x ( … ) | cmd` is a
+  // syntax error, because an assignment may only be followed by a command.
+  let continuesCommand = false;
+  let pipelineStart = 0;
 
   for (let i = 0; i < command.length; i++) {
     const char = command[i];
@@ -231,11 +236,20 @@ export function findCommandStarts(command: string): Set<number> {
     } else if (!inSingleQuote && !inDoubleQuote) {
       const afterExpansion = skipCommandSubstitution(command, i);
       if (afterExpansion !== -1) {
-        // The command inside a substitution is not one of ours to rewrite.
+        // A substitution holds commands of its own — `OUT=$(git commit …)` is
+        // a real commit — so look inside, offsetting what is found back onto
+        // this string.
+        const innerStart = command[i] === "`" ? i + 1 : i + 2;
+        const inner = command.slice(innerStart, afterExpansion - 1);
+        for (const [start, pipeline] of findCommandStarts(inner)) {
+          starts.set(innerStart + start, innerStart + pipeline);
+        }
         if (atStart) {
-          starts.add(i);
+          if (!continuesCommand) pipelineStart = i;
+          starts.set(i, pipelineStart);
           atStart = false;
           inAssignment = false;
+          continuesCommand = false;
         }
         i = afterExpansion - 1;
         continue;
@@ -243,21 +257,25 @@ export function findCommandStarts(command: string): Set<number> {
       if (isSeparatorAt(command, i)) {
         atStart = true;
         inAssignment = false;
+        continuesCommand = false;
         continue;
       }
     }
 
     // `GIT_COMMITTER_DATE=… git commit …`: an assignment prefix leaves the
-    // word after it still in command position.
+    // word after it still in command position, and part of the same command.
     if (inAssignment && !inSingleQuote && !inDoubleQuote && /\s/.test(char)) {
       atStart = true;
       inAssignment = false;
+      continuesCommand = true;
     }
 
     if (!atStart || /\s/.test(char)) continue;
 
-    starts.add(i);
+    if (!continuesCommand) pipelineStart = i;
+    starts.set(i, pipelineStart);
     atStart = false;
+    continuesCommand = false;
 
     const word = readShellWord(command, i);
     if (word && /^[A-Za-z_][A-Za-z0-9_]*=/.test(word.value)) inAssignment = true;

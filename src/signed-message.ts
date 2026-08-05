@@ -71,12 +71,3 @@ export function fileReader(pathToken: string): string {
   return `cat -- ${pathToken}`;
 }
 
-/** Read the message from whatever is already feeding standard input. */
-export function stdinReader(): string {
-  return "cat";
-}
-
-/** Read the message of an existing commit, for --amend and -C/-c. */
-export function commitReader(refToken: string): string {
-  return `git log -1 --format=%B ${refToken}`;
-}
