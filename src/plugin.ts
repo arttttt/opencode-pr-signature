@@ -563,12 +563,19 @@ function readHeredocHeader(command: string, index: number): { header: HeredocHea
 const MASK_CHARACTER = "x";
 
 /**
- * Overwrite one heredoc body — from the newline that opens it through its
- * terminator line — and return the index just past the terminator line.
+ * Locate the body of the heredoc whose header ends at headerEnd: the text
+ * between the newline that opens it and its terminator line. Returns
+ * undefined when the heredoc is never terminated.
  */
-function maskHeredocBody(command: string, masked: string[], start: number, header: HeredocHeader): number {
-  let lineStart = start + 1;
+function findHeredocBody(
+  command: string,
+  headerEnd: number,
+  header: HeredocHeader,
+): { start: number; end: number; delimiterLineEnd: number } | undefined {
+  const opening = command.indexOf("\n", headerEnd);
+  if (opening === -1) return undefined;
 
+  let lineStart = opening + 1;
   while (lineStart <= command.length) {
     const newline = command.indexOf("\n", lineStart);
     const lineEnd = newline === -1 ? command.length : newline;
@@ -576,16 +583,25 @@ function maskHeredocBody(command: string, masked: string[], start: number, heade
     const content = header.allowIndent ? line.replace(/^\t+/, "") : line;
 
     if (content.replace(/\r$/, "") === header.delimiter) {
-      for (let i = start; i < lineEnd; i++) masked[i] = MASK_CHARACTER;
-      return lineEnd;
+      return { start: opening + 1, end: lineStart, delimiterLineEnd: lineEnd };
     }
     if (newline === -1) break;
     lineStart = newline + 1;
   }
 
-  // Unterminated heredoc: the rest of the string is message text.
-  for (let i = start; i < command.length; i++) masked[i] = MASK_CHARACTER;
-  return command.length;
+  return undefined;
+}
+
+/**
+ * Overwrite one heredoc body — from the newline that opens it through its
+ * terminator line — and return the index just past the terminator line.
+ */
+function maskHeredocBody(command: string, masked: string[], start: number, header: HeredocHeader): number {
+  const body = findHeredocBody(command, start, header);
+  // An unterminated heredoc swallows the rest of the string as message text.
+  const end = body ? body.delimiterLineEnd : command.length;
+  for (let i = start; i < end; i++) masked[i] = MASK_CHARACTER;
+  return end;
 }
 
 /**
@@ -699,9 +715,18 @@ type ShellWord = {
   end: number;
 };
 
+/**
+ * Where a git commit takes its message from.
+ *
+ * "stdin" and "path" are kept apart because only one of them is signable: an
+ * inline heredoc is right there in the command string, while a path names
+ * content that exists only on disk, at a working directory this plugin does
+ * not know, at a time that has not arrived yet.
+ */
 type CommitMessageSource =
   | { kind: "message" }
-  | { kind: "file"; value: string; start: number; end: number };
+  | { kind: "stdin"; optionEnd: number }
+  | { kind: "path" };
 
 /** Read the limited shell word syntax used for git commit message options. */
 function readShellWord(command: string, startIndex: number): ShellWord | undefined {
@@ -750,7 +775,7 @@ function findCommitMessageSource(command: string, startIndex: number): CommitMes
 
     if (word.value === "-m" || word.value === "--message") {
       const message = readShellWord(command, index);
-      if (!message || source?.kind === "file") return undefined;
+      if (!message || (source && source.kind !== "message")) return undefined;
       source = { kind: "message" };
       index = message.end;
       continue;
@@ -758,7 +783,7 @@ function findCommitMessageSource(command: string, startIndex: number): CommitMes
     // Attached forms: -m"subject", -msubject, --message=subject. git accepts
     // all of them, so the plugin has to recognize all of them.
     if (word.value.startsWith("--message=") || (word.value.startsWith("-m") && word.value.length > 2)) {
-      if (source?.kind === "file") return undefined;
+      if (source && source.kind !== "message") return undefined;
       source = { kind: "message" };
       continue;
     }
@@ -775,36 +800,46 @@ function findCommitMessageSource(command: string, startIndex: number): CommitMes
     }
 
     if (file) {
-      // Dynamic paths would be evaluated a second time by the wrapper.
-      if (source || /[$`]/.test(file.raw)) return undefined;
-      source = { kind: "file", value: file.value, start: word.start, end: file.end };
+      // -m together with -F is a git error; two -F options are ambiguous.
+      if (source) return undefined;
+      source = file.value === "-" ? { kind: "stdin", optionEnd: file.end } : { kind: "path" };
     }
   }
   return source;
 }
 
+/**
+ * Append the signature to the heredoc attached to a `-F -` option, in the
+ * command's own text. Returns the command unchanged when the body is already
+ * signed, and undefined when there is no heredoc to sign — a pipe, a redirect
+ * or an unterminated heredoc all land there.
+ */
 function addSignatureToHeredoc(command: string, signature: string, afterOption: number): string | undefined {
-  const header = /<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/.exec(command.slice(afterOption));
-  if (!header || header.index === undefined) return undefined;
+  // The header has to sit on the option's own line; past that newline the
+  // heredoc body, or another command, has already begun.
+  const newline = command.indexOf("\n", afterOption);
+  const limit = newline === -1 ? command.length : newline;
 
-  const headerEnd = afterOption + header.index + header[0].length;
-  const bodyStart = command.indexOf("\n", headerEnd);
-  if (bodyStart === -1) return undefined;
+  for (let index = afterOption; index < limit; index++) {
+    const heredoc = readHeredocHeader(command, index);
+    if (!heredoc) continue;
 
-  const delimiter = header[2].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const indent = header[0].startsWith("<<-") ? "\\t*" : "";
-  const delimiterMatch = new RegExp(`^${indent}${delimiter}\\r?$`, "m").exec(command.slice(bodyStart + 1));
-  if (!delimiterMatch || delimiterMatch.index === undefined) return undefined;
+    const body = findHeredocBody(command, heredoc.end, heredoc.header);
+    if (!body) return undefined;
+    if (hasSignature(command.slice(body.start, body.end))) return command;
+    return command.slice(0, body.end) + `\n${signature}\n` + command.slice(body.end);
+  }
 
-  const delimiterStart = bodyStart + 1 + delimiterMatch.index;
-  const body = command.slice(bodyStart + 1, delimiterStart);
-  if (hasSignature(body)) return command;
-  return command.slice(0, delimiterStart) + `\n${signature}\n` + command.slice(delimiterStart);
+  return undefined;
 }
 
 /**
- * Add a signature to a single git commit command. File-backed messages are
- * copied to a temporary file so the caller's message file is never modified.
+ * Add a signature to a single git commit command.
+ *
+ * Signs the two message forms whose text is visible in the command itself:
+ * -m in any spelling, and -F - fed by an inline heredoc. Every other form —
+ * a message file, a pipe, a redirect — is left exactly as the user wrote it,
+ * because signing it would mean guessing at content this plugin cannot see.
  */
 export function addSignatureToGitCommitCommand(command: string, signature: string): string {
   // Scan the masked copy so message text is never read as shell syntax, and
@@ -827,22 +862,16 @@ export function addSignatureToGitCommitCommand(command: string, signature: strin
     return `${beforeEnd} -m ${quoteShellArgument(signature)}${separator}${afterCommand}`;
   }
 
-  if (source.value === "-") {
-    const heredocCommand = addSignatureToHeredoc(commandPart, signature, source.end);
-    if (heredocCommand) return command.slice(0, gitCommitStart) + heredocCommand + command.slice(endIndex);
-  }
+  // A message file: git reads it later, in a working directory we do not know,
+  // and its contents may not even exist yet. Leave the command alone.
+  if (source.kind === "path") return command;
 
-  const tempFile = "__opencode_signature_file";
-  const rewrittenCommit = commandPart.slice(0, source.start) + `-F "$${tempFile}"` + commandPart.slice(source.end);
-  const readMessage = source.value === "-"
-    ? `cat >"$${tempFile}"`
-    : `cat -- ${quoteShellArgument(source.value)} >"$${tempFile}"`;
-  const marker = quoteShellArgument(SIGNATURE_MARKER);
-  const quotedSignature = quoteShellArgument(signature);
-  const wrapper = `( ${tempFile}=$(mktemp "\${TMPDIR:-/tmp}/opencode-pr-signature.XXXXXX") || exit; trap 'rm -f -- "$${tempFile}"' 0 HUP INT TERM; ${readMessage} || exit; if ! grep -Fq -- ${marker} "$${tempFile}"; then printf '\\n\\n%s\\n' ${quotedSignature} >>"$${tempFile}" || exit; fi; ${rewrittenCommit} )`;
-  const afterCommand = command.slice(endIndex);
-  const separator = afterCommand && !/^\s/.test(afterCommand) ? " " : "";
-  return command.slice(0, gitCommitStart) + wrapper + separator + afterCommand;
+  // -F - : signable only when the text is inline, i.e. an attached heredoc.
+  // A pipe or a redirect carries content produced at run time, which nothing
+  // here can read without taking the stream away from git.
+  const heredocCommand = addSignatureToHeredoc(commandPart, signature, source.optionEnd);
+  if (!heredocCommand) return command;
+  return command.slice(0, gitCommitStart) + heredocCommand + command.slice(endIndex);
 }
 
 /**

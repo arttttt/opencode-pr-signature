@@ -44,26 +44,24 @@ describe("git commit signatures", () => {
     expect(command).toBe(`git commit -m "subject" -m "body" -m '${signature}'`);
   });
 
-  test("signs a -F message without changing its source file", () => {
+  test("leaves a message file untouched, and its commit unchanged", () => {
     const directory = createRepository();
     const messageFile = join(directory, "commit message.txt");
     writeFileSync(messageFile, "subject\n\nbody\n");
-    const command = addSignatureToGitCommitCommand("git commit -F 'commit message.txt'", signature);
+    const original = "git commit -F 'commit message.txt'";
 
+    const command = addSignatureToGitCommitCommand(original, signature);
     run(directory, command);
 
-    expect(commitMessage(directory)).toContain(signature);
+    expect(command).toBe(original);
+    expect(commitMessage(directory)).toBe("subject\n\nbody\n\n");
     expect(readFileSync(messageFile, "utf8")).toBe("subject\n\nbody\n");
   });
 
-  test("supports --file=PATH and does not duplicate an existing signature", () => {
-    const directory = createRepository();
-    writeFileSync(join(directory, "message"), `subject\n\n${signature}\n`);
-    const command = addSignatureToGitCommitCommand("git commit --file=message", signature);
+  test("leaves --file=PATH alone rather than guessing at its contents", () => {
+    const original = "git commit --file=message";
 
-    run(directory, command);
-
-    expect(commitMessage(directory).match(/Generated with \[OpenCode\]/g)).toHaveLength(1);
+    expect(addSignatureToGitCommitCommand(original, signature)).toBe(original);
   });
 
   test("signs a -F- heredoc before Git reads stdin", () => {
@@ -81,12 +79,14 @@ describe("git commit signatures", () => {
     expect(addSignatureToGitCommitCommand(command, signature)).toBe(command);
   });
 
-  test("captures piped stdin for -F-", () => {
+  test("leaves piped stdin alone: taking the stream would lose the message", () => {
     const directory = createRepository();
-    const command = addSignatureToGitCommitCommand("printf 'subject\\n' | git commit -F-", signature);
+    const original = "printf 'subject\\n' | git commit -F-";
 
+    const command = addSignatureToGitCommitCommand(original, signature);
     run(directory, command);
 
-    expect(commitMessage(directory)).toContain(signature);
+    expect(command).toBe(original);
+    expect(commitMessage(directory)).toBe("subject\n\n");
   });
 });
