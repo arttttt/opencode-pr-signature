@@ -310,11 +310,57 @@ describe("git commit -F- fed by a pipe", () => {
   });
 });
 
+describe("git commit --amend --no-edit", () => {
+  /** A repository whose HEAD carries `subject`, with something else staged. */
+  function repositoryWithCommit(subject: string): string {
+    const directory = createRepository();
+    run(directory, `git commit -q -m ${JSON.stringify(subject)}`);
+    writeFileSync(join(directory, "tracked.txt"), "changed\n");
+    run(directory, "git add tracked.txt");
+    return directory;
+  }
+
+  test("signs the message it is reusing", async () => {
+    const directory = repositoryWithCommit("subject");
+
+    run(directory, await sign("git commit --amend --no-edit"));
+
+    expect(commitMessage(directory)).toBe(`subject\n\n${signature}\n\n`);
+  });
+
+  test("keeps the original author and author date", async () => {
+    const directory = repositoryWithCommit("subject");
+    const before = run(directory, "git log -1 --format='%an|%ae|%ad'");
+
+    run(directory, await sign("git commit --amend --no-edit"));
+
+    expect(run(directory, "git log -1 --format='%an|%ae|%ad'")).toBe(before);
+  });
+
+  test("does not sign twice when amended again", async () => {
+    const directory = repositoryWithCommit("subject");
+    run(directory, await sign("git commit --amend --no-edit"));
+    writeFileSync(join(directory, "tracked.txt"), "changed again\n");
+    run(directory, "git add tracked.txt");
+
+    run(directory, await sign("git commit --amend --no-edit"));
+
+    expect(commitMessage(directory).match(/Generated with \[OpenCode\]/g)).toHaveLength(1);
+  });
+});
+
 describe("messages the plugin refuses to touch", () => {
   test.each([
     ["a message file mixed with -m", 'git commit -m "subject" -F message.txt'],
     ["a message file whose input is already piped", "printf x | git commit -F msg.txt"],
     ["stdin with nothing visible feeding it", "git commit -F-"],
+    // The message does not exist yet: the user is about to write it.
+    ["an amend that opens the editor", "git commit --amend"],
+    ["a commit that opens the editor", "git commit"],
+    // -C and -c copy the author and author date too; -F would reset both.
+    ["a message reused from another commit", "git commit -C HEAD~1"],
+    ["a message reedited from another commit", "git commit -c HEAD~1"],
+    ["--reuse-message", "git commit --reuse-message=HEAD~1"],
   ])("returns the command unchanged for %s", async (_name, command) => {
     expect(await sign(command)).toBe(command);
   });

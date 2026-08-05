@@ -3,7 +3,7 @@
  */
 
 import { hasSignature } from "./signature";
-import { fileReader, signedMessageGroup, stdinReader } from "./signed-message";
+import { commitReader, fileReader, signedMessageGroup, stdinReader } from "./signed-message";
 import {
   findCommandEndIndex,
   findCommandMatch,
@@ -28,7 +28,8 @@ import {
 type CommitMessageSource =
   | { kind: "message" }
   | { kind: "stdin"; optionEnd: number }
-  | { kind: "path"; token: string; start: number; end: number };
+  | { kind: "path"; token: string; start: number; end: number }
+  | { kind: "head" };
 
 /**
  * Work out which message option the commit carries, in any of the spellings
@@ -38,11 +39,32 @@ type CommitMessageSource =
 function findCommitMessageSource(command: string, startIndex: number): CommitMessageSource | undefined {
   let index = startIndex;
   let source: CommitMessageSource | undefined;
+  let amend = false;
+  let noEdit = false;
 
   while (index < command.length) {
     const word = readShellWord(command, index);
     if (!word || word.value === "--") break;
     index = word.end;
+
+    if (word.value === "--amend") {
+      amend = true;
+      continue;
+    }
+    if (word.value === "--no-edit") {
+      noEdit = true;
+      continue;
+    }
+    // -C and -c copy the author and the author date along with the message.
+    // Feeding the message in on -F instead would quietly reset both.
+    if (
+      word.value === "-C" ||
+      word.value === "-c" ||
+      word.value.startsWith("--reuse-message") ||
+      word.value.startsWith("--reedit-message")
+    ) {
+      return undefined;
+    }
 
     if (word.value === "-m" || word.value === "--message") {
       const message = readShellWord(command, index);
@@ -79,6 +101,10 @@ function findCommitMessageSource(command: string, startIndex: number): CommitMes
           : { kind: "path", token: file.raw, start: word.start, end: file.end };
     }
   }
+
+  // `--amend --no-edit` reuses HEAD's message and opens no editor. Plain
+  // `--amend` does open one, and its message does not exist yet.
+  if (!source && amend && noEdit) return { kind: "head" };
   return source;
 }
 
@@ -137,6 +163,20 @@ export function addSignatureToGitCommitCommand(command: string, signature: strin
     const afterCommand = command.slice(endIndex);
     const separator = afterCommand && !/^\s/.test(afterCommand) ? " " : "";
     return `${beforeEnd} -m ${quoteShellArgument(signature)}${separator}${afterCommand}`;
+  }
+
+  // --amend --no-edit: the message is HEAD's, so read it back and amend with
+  // the signed text. git keeps the original author and author date either way.
+  if (source.kind === "head") {
+    if (hasPrecedingPipe(scan, gitCommitStart)) return command;
+    if (findStdinRedirect(scan.slice(gitCommitStart, endIndex)).kind !== "none") return command;
+
+    const group = signedMessageGroup(commitReader("HEAD"), signature);
+    return (
+      command.slice(0, gitCommitStart) +
+      `${group} | ${commandPart.trimEnd()} -F -` +
+      command.slice(endIndex)
+    );
   }
 
   // A message file: read it when the command runs, in the working directory
