@@ -690,8 +690,16 @@ function findCommandEndIndex(command: string, startIndex: number): number {
       // subshell or substitution we must not reach across, a lone `&`
       // backgrounds what came before, and `#` opens a comment that would
       // swallow anything appended after it.
-      if (/[;|&\n()]/.test(char)) return i;
-      if (char === "#" && (i === startIndex || /\s/.test(prevChar))) return i;
+      if (char === "&") {
+        // ...but 2>&1, >&2 and &>log are redirections that belong to the
+        // command, not separators that end it.
+        const redirection = prevChar === ">" || prevChar === "<" || command[i + 1] === ">";
+        if (!redirection) return i;
+      } else if (/[;|\n()]/.test(char)) {
+        return i;
+      } else if (char === "#" && (i === startIndex || /\s/.test(prevChar))) {
+        return i;
+      }
     }
     i++;
   }
