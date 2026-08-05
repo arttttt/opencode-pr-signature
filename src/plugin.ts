@@ -563,13 +563,10 @@ function findCommandEndIndex(command: string, startIndex: number): number {
 }
 
 /**
- * Escape special characters for use in shell arguments
+ * Wrap a value so the shell passes it through verbatim. Single quotes are the
+ * only quoting in POSIX sh that suppresses every expansion, so an embedded
+ * quote has to be closed, escaped and reopened.
  */
-function escapeForShell(text: string): string {
-  // Escape double quotes and backslashes
-  return text.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-}
-
 function quoteShellArgument(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
@@ -731,50 +728,84 @@ function isGhCommandWithBody(command: string): boolean {
 }
 
 /**
- * Check if command has --body or -b flag
+ * What the gh command says about its body, as far as we can tell.
+ *
+ * "unsupported" is deliberately distinct from "absent": adding a second
+ * --body would make gh use ours and drop the user's text, so a body we cannot
+ * rewrite in place has to stop us rather than fall back to adding a flag.
  */
-function hasBodyFlag(command: string): boolean {
-  return /\s(--body|-b)\s/.test(command) || /\s(--body|-b)["']/.test(command);
+type GhBodyOption =
+  | { kind: "absent" }
+  | { kind: "unsupported" }
+  | { kind: "present"; value: string; start: number; end: number };
+
+/**
+ * Locate the --body/-b value of a gh command, in any of the spellings gh
+ * accepts: `--body x`, `--body=x`, `-b x`, `-bx`.
+ */
+function findGhBodyOption(command: string): GhBodyOption {
+  let index = 0;
+
+  while (index < command.length) {
+    const word = readShellWord(command, index);
+    if (!word || word.value === "--") break;
+    index = word.end;
+
+    // --body-file and --body-text are different options that happen to share
+    // the prefix; only an exact match or an `=` is the body itself.
+    if (word.value === "--body" || word.value === "-b") {
+      const value = readShellWord(command, index);
+      if (!value) return { kind: "unsupported" };
+      if (/[$`]/.test(value.raw)) return { kind: "unsupported" };
+      return { kind: "present", value: value.value, start: word.start, end: value.end };
+    }
+
+    let inline: { value: string; offset: number } | undefined;
+    if (word.value.startsWith("--body=")) inline = { value: word.value.slice(7), offset: 7 };
+    else if (word.value.startsWith("-b") && word.value.length > 2) {
+      inline = { value: word.value.slice(2), offset: 2 };
+    }
+
+    if (inline) {
+      if (/[$`]/.test(word.raw.slice(inline.offset))) return { kind: "unsupported" };
+      return { kind: "present", value: inline.value, start: word.start, end: word.end };
+    }
+
+    // A body read from a file or from stdin is not ours to rewrite.
+    if (word.value === "--body-file" || word.value.startsWith("--body-file=") || word.value === "-F") {
+      return { kind: "unsupported" };
+    }
+  }
+
+  return { kind: "absent" };
 }
 
 /**
  * Add signature to gh CLI command.
- * If --body/-b exists, append signature to its value.
- * If not, add --body flag with signature.
+ * If --body/-b exists, append the signature to its value; otherwise add the
+ * flag. Returns the command unchanged when the body cannot be rewritten.
  */
 function addSignatureToGhCommand(command: string, signature: string, startIndex: number): string {
-  const escapedSignature = escapeForShell(signature);
   const endIndex = findCommandEndIndex(command, startIndex);
 
   const commandPart = command.slice(startIndex, endIndex);
   const beforeCommand = command.slice(0, startIndex);
   const afterCommand = command.slice(endIndex);
 
-  if (hasBodyFlag(commandPart)) {
-    // Find and modify existing --body or -b value
-    // Match patterns: --body "text", --body 'text', -b "text", -b 'text'
-    const bodyRegex = /(--body|-b)\s*(["'])([\s\S]*?)\2/;
-    const match = commandPart.match(bodyRegex);
+  const body = findGhBodyOption(commandPart);
 
-    if (match) {
-      const [fullMatch, flag, quote, content] = match;
-      // Use real newlines: gh receives the body via a quoted shell argument,
-      // where bash preserves literal newlines but would NOT interpret "\n".
-      const newContent = content.trimEnd() + "\n\n" + escapedSignature;
-      const newBody = `${flag} ${quote}${newContent}${quote}`;
-      const modifiedPart = commandPart.replace(fullMatch, newBody);
-      return beforeCommand + modifiedPart + afterCommand;
-    }
+  if (body.kind === "unsupported") return command;
 
-    // If regex didn't match (e.g., HEREDOC), add as separate flag anyway
-    // gh CLI will use the last --body value
+  if (body.kind === "absent") {
     const trimmedPart = commandPart.trimEnd();
-    return beforeCommand + trimmedPart + ` --body "${escapedSignature}"` + afterCommand;
-  } else {
-    // No body flag, add one
-    const trimmedPart = commandPart.trimEnd();
-    return beforeCommand + trimmedPart + ` --body "${escapedSignature}"` + afterCommand;
+    return beforeCommand + trimmedPart + ` --body ${quoteShellArgument(signature)}` + afterCommand;
   }
+
+  // Real newlines: gh receives the body as one shell argument, where a
+  // literal "\n" would stay two characters.
+  const signed = quoteShellArgument(body.value.trimEnd() + "\n\n" + signature);
+  const rewritten = commandPart.slice(0, body.start) + `--body ${signed}` + commandPart.slice(body.end);
+  return beforeCommand + rewritten + afterCommand;
 }
 
 /**
