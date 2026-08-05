@@ -275,22 +275,48 @@ describe("git commit -F- fed by a redirect", () => {
   });
 });
 
-describe("messages the plugin refuses to touch", () => {
-  // Each names content the plugin cannot reach without taking a stream away
-  // from git, which is how the message used to be lost.
-  test.each([
-    ["a piped message", "printf 'subject\\n' | git commit -F-"],
-    ["a message file mixed with -m", 'git commit -m "subject" -F message.txt'],
-  ])("returns the command unchanged for %s", async (_name, command) => {
-    expect(await sign(command)).toBe(command);
-  });
-
-  test("a piped message reaches git intact", async () => {
+describe("git commit -F- fed by a pipe", () => {
+  test("signs the piped message", async () => {
     const directory = createRepository();
 
-    run(directory, await sign("printf 'subject\\n' | git commit -F-"));
+    run(directory, await sign("printf 'subject\\n\\nbody\\n' | git commit -F-"));
 
-    expect(commitMessage(directory)).toBe("subject\n\n");
+    expect(commitMessage(directory)).toBe(`subject\n\nbody\n\n${signature}\n\n`);
+  });
+
+  test("does not sign a piped message that already carries the signature", async () => {
+    const directory = createRepository();
+
+    run(directory, await sign(`printf 'subject\\n\\n${signature}\\n' | git commit -F-`));
+
+    expect(commitMessage(directory).match(/Generated with \[OpenCode\]/g)).toHaveLength(1);
+  });
+
+  test("makes no commit when the producer writes nothing", async () => {
+    const directory = createRepository();
+    const rewritten = await sign("printf '' | git commit -F-");
+
+    expect(() => run(directory, rewritten)).toThrow();
+    expect(() => commitMessage(directory)).toThrow();
+  });
+
+  test("keeps a command chained after the pipeline", async () => {
+    const directory = createRepository();
+
+    run(directory, await sign("printf 'subject\\n' | git commit -F- && git tag done"));
+
+    expect(commitMessage(directory)).toBe(`subject\n\n${signature}\n\n`);
+    expect(run(directory, "git tag")).toBe("done\n");
+  });
+});
+
+describe("messages the plugin refuses to touch", () => {
+  test.each([
+    ["a message file mixed with -m", 'git commit -m "subject" -F message.txt'],
+    ["a message file whose input is already piped", "printf x | git commit -F msg.txt"],
+    ["stdin with nothing visible feeding it", "git commit -F-"],
+  ])("returns the command unchanged for %s", async (_name, command) => {
+    expect(await sign(command)).toBe(command);
   });
 });
 
@@ -393,10 +419,10 @@ describe("one line carrying both a commit and a pull request", () => {
   });
 
   test("still signs the pull request when the commit cannot be signed", async () => {
-    const rewritten = await sign('printf x | git commit -F- && gh pr create --title t --body "hello"');
+    const rewritten = await sign('printf x | git commit -F msg.txt && gh pr create --title t --body "hello"');
 
     expect(rewritten).toBe(
-      `printf x | git commit -F- && gh pr create --title t --body 'hello\n\n${signature}'`,
+      `printf x | git commit -F msg.txt && gh pr create --title t --body 'hello\n\n${signature}'`,
     );
   });
 });

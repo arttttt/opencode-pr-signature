@@ -161,15 +161,25 @@ export function addSignatureToGitCommitCommand(command: string, signature: strin
   // onto the group, so the group reads exactly what git would have read and
   // git reads the signed result.
   const redirect = findStdinRedirect(scan.slice(gitCommitStart, endIndex));
-  if (redirect.kind !== "file" && redirect.kind !== "string") return command;
-
-  const operator = redirect.kind === "file" ? "<" : "<<<";
   const group = signedMessageGroup(stdinReader(), signature);
-  const withoutRedirect = (commandPart.slice(0, redirect.start) + commandPart.slice(redirect.end)).trimEnd();
 
-  return (
-    command.slice(0, gitCommitStart) +
-    `${group} ${operator} ${redirect.token} | ${withoutRedirect}` +
-    command.slice(endIndex)
-  );
+  if (redirect.kind === "file" || redirect.kind === "string") {
+    const operator = redirect.kind === "file" ? "<" : "<<<";
+    const withoutRedirect = (commandPart.slice(0, redirect.start) + commandPart.slice(redirect.end)).trimEnd();
+
+    return (
+      command.slice(0, gitCommitStart) +
+      `${group} ${operator} ${redirect.token} | ${withoutRedirect}` +
+      command.slice(endIndex)
+    );
+  }
+
+  // Fed by a pipeline: slot the group in between, where it reads the producer
+  // and git reads it.
+  if (redirect.kind === "none" && hasPrecedingPipe(scan, gitCommitStart)) {
+    return command.slice(0, gitCommitStart) + `${group} | ${commandPart}` + command.slice(endIndex);
+  }
+
+  // Nothing visible feeds standard input, so there is no message to sign.
+  return command;
 }
