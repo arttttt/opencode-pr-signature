@@ -8,8 +8,10 @@ import { addSignatureToGitCommitCommand } from "../src/plugin";
 const signature = "🤖 Generated with [OpenCode](https://opencode.ai) (Test Model)";
 const directories: string[] = [];
 
+// POSIX sh, not the developer's login shell: the rewritten commands must work
+// under whatever /bin/sh the machine running OpenCode provides.
 function run(directory: string, command: string): string {
-  return execFileSync("/bin/zsh", ["-c", command], { cwd: directory, encoding: "utf8" });
+  return execFileSync("/bin/sh", ["-c", command], { cwd: directory, encoding: "utf8" });
 }
 
 function createRepository(): string {
