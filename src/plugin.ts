@@ -660,6 +660,83 @@ function maskHeredocBodies(command: string): string {
 }
 
 /**
+ * Whether the character at index ends the command that precedes it.
+ *
+ * A newline separates as surely as a semicolon, `(` and `)` bound a subshell
+ * or substitution, and a free-standing `&` backgrounds what came before — but
+ * an `&` in 2>&1, >&2 or &>log is part of a redirection and belongs to the
+ * command.
+ */
+function isSeparatorAt(command: string, index: number): boolean {
+  const char = command[index];
+  if (char === "&") {
+    const prevChar = index > 0 ? command[index - 1] : "";
+    return !(prevChar === ">" || prevChar === "<" || command[index + 1] === ">");
+  }
+  return /[;|\n()]/.test(char ?? "");
+}
+
+/**
+ * Collect the positions at which a command begins: the start of the string,
+ * and the first non-blank character after every separator.
+ *
+ * A `git commit` found anywhere else is text inside another command's
+ * argument — `echo "run git commit -m x"` — and rewriting it would append
+ * options to whatever command really is running.
+ */
+function findCommandStarts(command: string): Set<number> {
+  const starts = new Set<number>();
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let atStart = true;
+
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i];
+    const prevChar = i > 0 ? command[i - 1] : "";
+
+    if (char === "'" && !inDoubleQuote && prevChar !== "\\") {
+      inSingleQuote = !inSingleQuote;
+    } else if (char === '"' && !inSingleQuote && prevChar !== "\\") {
+      inDoubleQuote = !inDoubleQuote;
+    } else if (!inSingleQuote && !inDoubleQuote && isSeparatorAt(command, i)) {
+      atStart = true;
+      continue;
+    }
+
+    if (!atStart || /\s/.test(char)) continue;
+
+    starts.add(i);
+    atStart = false;
+
+    // `GIT_COMMITTER_DATE=… git commit …`: an assignment prefix leaves the
+    // word after it still in command position.
+    const word = readShellWord(command, i);
+    if (word && /^[A-Za-z_][A-Za-z0-9_]*=/.test(word.value)) {
+      atStart = true;
+      i = word.end - 1;
+    }
+  }
+
+  return starts;
+}
+
+/**
+ * Find the first occurrence of a command that is actually being run, skipping
+ * matches that sit inside another command's arguments.
+ */
+function findCommandMatch(command: string, pattern: RegExp): RegExpExecArray | undefined {
+  const starts = findCommandStarts(command);
+  const regex = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : pattern.flags + "g");
+
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(command)) !== null) {
+    if (starts.has(match.index)) return match;
+  }
+
+  return undefined;
+}
+
+/**
  * Find the end position of a command in a bash command string.
  * Respects quotes to avoid splitting on && or || inside quoted strings.
  *
@@ -690,16 +767,8 @@ function findCommandEndIndex(command: string, startIndex: number): number {
       // subshell or substitution we must not reach across, a lone `&`
       // backgrounds what came before, and `#` opens a comment that would
       // swallow anything appended after it.
-      if (char === "&") {
-        // ...but 2>&1, >&2 and &>log are redirections that belong to the
-        // command, not separators that end it.
-        const redirection = prevChar === ">" || prevChar === "<" || command[i + 1] === ">";
-        if (!redirection) return i;
-      } else if (/[;|\n()]/.test(char)) {
-        return i;
-      } else if (char === "#" && (i === startIndex || /\s/.test(prevChar))) {
-        return i;
-      }
+      if (isSeparatorAt(command, i)) return i;
+      if (char === "#" && (i === startIndex || /\s/.test(prevChar))) return i;
     }
     i++;
   }
@@ -853,7 +922,7 @@ export function addSignatureToGitCommitCommand(command: string, signature: strin
   // Scan the masked copy so message text is never read as shell syntax, and
   // slice the original so the message is never altered by scanning.
   const scan = maskHeredocBodies(command);
-  const gitCommitMatch = scan.match(/git\s+commit\b/i);
+  const gitCommitMatch = findCommandMatch(scan, /git\s+commit\b/i);
   if (!gitCommitMatch || gitCommitMatch.index === undefined) return command;
 
   const gitCommitStart = gitCommitMatch.index;
@@ -950,6 +1019,8 @@ function findGhBodyOption(command: string): GhBodyOption {
  */
 function addSignatureToGhCommand(command: string, signature: string, startIndex: number): string {
   const scan = maskHeredocBodies(command);
+  if (!findCommandStarts(scan).has(startIndex)) return command;
+
   const endIndex = findCommandEndIndex(scan, startIndex);
 
   const commandPart = command.slice(startIndex, endIndex);
