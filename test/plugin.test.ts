@@ -257,6 +257,73 @@ describe("git commit with a message file", () => {
 
     expect(await sign(command)).toBe(command);
   });
+
+  test("survives an environment assignment in front of the commit", async () => {
+    const directory = createRepository();
+    writeFileSync(join(directory, "msg.txt"), "subject\n");
+
+    run(directory, await sign('GIT_AUTHOR_NAME="Someone Else" git commit -F msg.txt'));
+
+    expect(commitMessage(directory)).toBe(`subject\n\n${signature}\n\n`);
+    expect(run(directory, "git log -1 --format=%an")).toBe("Someone Else\n");
+  });
+
+  test("keeps a redirection that is written without a space", async () => {
+    const directory = createRepository();
+    writeFileSync(join(directory, "msg.txt"), "subject\n");
+
+    run(directory, await sign("git commit -F msg.txt>out.log"));
+
+    expect(commitMessage(directory)).toBe(`subject\n\n${signature}\n\n`);
+    expect(readFileSync(join(directory, "out.log"), "utf8")).toContain("subject");
+  });
+
+  test("reads a path produced by a command substitution", async () => {
+    const directory = createRepository();
+    writeFileSync(join(directory, "msg.txt"), "subject\n");
+
+    run(directory, await sign("git commit -F $(echo msg.txt)"));
+
+    expect(commitMessage(directory)).toBe(`subject\n\n${signature}\n\n`);
+  });
+
+  test("signs a commit captured by a command substitution", async () => {
+    const directory = createRepository();
+    writeFileSync(join(directory, "msg.txt"), "subject\n");
+
+    // The stage must not touch the `$(` in front of it: `$((` opens an
+    // arithmetic expansion, which a POSIX shell rejects outright.
+    run(directory, await sign("OUT=$(git commit -F msg.txt); printf '%s' \"$OUT\" > captured.log"));
+
+    expect(commitMessage(directory)).toBe(`subject\n\n${signature}\n\n`);
+    expect(readFileSync(join(directory, "captured.log"), "utf8")).toContain("subject");
+  });
+
+  test.each([
+    ["a whole option in quotes", 'git commit "-Fmsg.txt"'],
+    ["a whole long option in quotes", 'git commit "--file=msg.txt"'],
+    ["a glob naming more than one file", "git commit -F *.txt"],
+    ["a descriptor other than standard input", "git commit -F - 10<msg.txt"],
+  ])("declines %s", async (_name, command) => {
+    expect(await sign(command)).toBe(command);
+  });
+});
+
+describe("messages git itself would refuse", () => {
+  // Appending a signature would turn git's refusal into a commit whose whole
+  // message is the signature.
+  test.each([['git commit -m ""', "an empty -m"], ["git commit -m '   '", "a blank -m"]])(
+    "declines %p so git still refuses",
+    async (command) => {
+      expect(await sign(command)).toBe(command);
+    },
+  );
+
+  test("still signs when one of several -m paragraphs has text", async () => {
+    const rewritten = await sign('git commit -m "" -m "subject"');
+
+    expect(rewritten).toBe(`git commit -m "" -m "subject" -m '${signature}'`);
+  });
 });
 
 describe("git commit -F- fed by a redirect", () => {

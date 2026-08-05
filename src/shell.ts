@@ -462,6 +462,28 @@ export type ShellWord = {
  * prefix and the raw text no longer line up character for character, and
  * slicing would cut a quote in half and leave the command unparseable.
  */
+/**
+ * Whether raw text carries a pathname-expansion character outside quotes.
+ *
+ * A glob names however many files match, which a single reader cannot stand
+ * in for: git takes the first match as the message and the rest as pathspecs,
+ * while `cat` would concatenate them all into one message.
+ */
+export function hasUnquotedGlob(raw: string): boolean {
+  let quote: string | undefined;
+  for (let i = 0; i < raw.length; i++) {
+    const char = raw[i];
+    if (quote) {
+      if (char === quote) quote = undefined;
+      continue;
+    }
+    if (char === "'" || char === '"') quote = char;
+    else if (char === "\\") i++;
+    else if (char === "*" || char === "?" || char === "[") return true;
+  }
+  return false;
+}
+
 export function attachedValue(word: ShellWord, prefix: string): string | undefined {
   if (word.value.length <= prefix.length || !word.value.startsWith(prefix)) return undefined;
   if (!word.raw.startsWith(prefix)) return undefined;

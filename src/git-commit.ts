@@ -12,6 +12,7 @@ import {
   findHeredocBody,
   findStdinRedirect,
   hasPrecedingPipe,
+  hasUnquotedGlob,
   maskHeredocBodies,
   quoteShellArgument,
   readHeredocHeader,
@@ -43,6 +44,15 @@ function findCommitMessageSource(command: string, startIndex: number): CommitMes
   let source: CommitMessageSource | undefined;
   let amend = false;
   let noEdit = false;
+  // git refuses a message that is blank once comments are stripped. Appending
+  // a signature would turn that refusal into a commit carrying the signature
+  // and nothing else, so track whether anything was actually written.
+  let messageIsBlank = true;
+
+  const noteMessage = (value: string, raw: string) => {
+    // Text the shell will expand is unknown here; assume it says something.
+    if (/[$`]/.test(raw) || /[^\s]/.test(value)) messageIsBlank = false;
+  };
 
   while (index < command.length) {
     const word = readShellWord(command, index);
@@ -57,13 +67,16 @@ function findCommitMessageSource(command: string, startIndex: number): CommitMes
       noEdit = true;
       continue;
     }
-    // -C and -c copy the author and the author date along with the message.
-    // Feeding the message in on -F instead would quietly reset both.
+    // -C and -c copy the author and the author date along with the message;
+    // feeding the message in on -F instead would quietly reset both. A squash
+    // or fixup message lives only until the rebase that consumes it.
     if (
       word.value === "-C" ||
       word.value === "-c" ||
       word.value.startsWith("--reuse-message") ||
-      word.value.startsWith("--reedit-message")
+      word.value.startsWith("--reedit-message") ||
+      word.value.startsWith("--squash") ||
+      word.value.startsWith("--fixup")
     ) {
       return undefined;
     }
@@ -71,6 +84,7 @@ function findCommitMessageSource(command: string, startIndex: number): CommitMes
     if (word.value === "-m" || word.value === "--message") {
       const message = readShellWord(command, index);
       if (!message || (source && source.kind !== "message")) return undefined;
+      noteMessage(message.value, message.raw);
       source = { kind: "message" };
       index = message.end;
       continue;
@@ -79,6 +93,8 @@ function findCommitMessageSource(command: string, startIndex: number): CommitMes
     // all of them, so the plugin has to recognize all of them.
     if (word.value.startsWith("--message=") || (word.value.startsWith("-m") && word.value.length > 2)) {
       if (source && source.kind !== "message") return undefined;
+      const prefix = word.value.startsWith("--message=") ? "--message=" : "-m";
+      noteMessage(word.value.slice(prefix.length), word.raw.slice(Math.min(prefix.length, word.raw.length)));
       source = { kind: "message" };
       continue;
     }
@@ -98,16 +114,21 @@ function findCommitMessageSource(command: string, startIndex: number): CommitMes
     if (file) {
       // -m together with -F is a git error; two -F options are ambiguous.
       if (source) return undefined;
-      source =
-        file.value === "-"
-          ? { kind: "stdin", optionEnd: file.end }
-          : { kind: "path", token: file.raw, start: word.start, end: file.end };
+      if (file.value === "-") {
+        source = { kind: "stdin", optionEnd: file.end };
+      } else {
+        // A glob names however many files match; one reader cannot stand in
+        // for git's own "first match is the message, the rest are pathspecs".
+        if (hasUnquotedGlob(file.raw)) return undefined;
+        source = { kind: "path", token: file.raw, start: word.start, end: file.end };
+      }
     }
   }
 
   // `--amend --no-edit` reuses HEAD's message and opens no editor. Plain
   // `--amend` does open one, and its message does not exist yet.
   if (!source && amend && noEdit) return { kind: "head" };
+  if (source?.kind === "message" && messageIsBlank) return undefined;
   return source;
 }
 
