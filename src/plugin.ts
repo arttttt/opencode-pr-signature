@@ -951,13 +951,8 @@ export function addSignatureToGitCommitCommand(command: string, signature: strin
   return command.slice(0, gitCommitStart) + heredocCommand + command.slice(endIndex);
 }
 
-/**
- * Check if a command is a gh CLI command that needs signature injection.
- * Supported commands: gh pr create, gh issue create, gh pr comment, gh issue comment, gh pr review
- */
-function isGhCommandWithBody(command: string): boolean {
-  return /gh\s+(pr|issue)\s+(create|comment|review)\b/i.test(command);
-}
+/** gh commands that carry a body we can sign. */
+const GH_COMMAND_PATTERN = /gh\s+(pr|issue)\s+(create|comment|review)\b/i;
 
 /**
  * What the gh command says about its body, as far as we can tell.
@@ -1013,19 +1008,25 @@ function findGhBodyOption(command: string): GhBodyOption {
 }
 
 /**
- * Add signature to gh CLI command.
+ * Add signature to a gh CLI command: gh pr/issue create, comment or review.
  * If --body/-b exists, append the signature to its value; otherwise add the
  * flag. Returns the command unchanged when the body cannot be rewritten.
  */
-function addSignatureToGhCommand(command: string, signature: string, startIndex: number): string {
+function addSignatureToGhCommand(command: string, signature: string): string {
   const scan = maskHeredocBodies(command);
-  if (!findCommandStarts(scan).has(startIndex)) return command;
+  const ghMatch = findCommandMatch(scan, GH_COMMAND_PATTERN);
+  if (!ghMatch || ghMatch.index === undefined) return command;
 
+  const startIndex = ghMatch.index;
   const endIndex = findCommandEndIndex(scan, startIndex);
 
   const commandPart = command.slice(startIndex, endIndex);
   const beforeCommand = command.slice(0, startIndex);
   const afterCommand = command.slice(endIndex);
+
+  // Scoped to this command, not the whole line: a signature already added to
+  // a git commit earlier in the same line says nothing about the PR body.
+  if (hasSignature(commandPart)) return command;
 
   // A heredoc inside the gh command itself (--body-file -, an inline body)
   // carries text we would have to read to append to it. Leave it alone.
@@ -1046,6 +1047,14 @@ function addSignatureToGhCommand(command: string, signature: string, startIndex:
   const rewritten = commandPart.slice(0, body.start) + `--body ${signed}` + commandPart.slice(body.end);
   return beforeCommand + rewritten + afterCommand;
 }
+
+/**
+ * Adds the signature to one kind of command, or returns it untouched.
+ * Locating its own command is part of the job, so the caller stays a list.
+ */
+type CommandRewriter = (command: string, signature: string) => string;
+
+const BASH_REWRITERS: readonly CommandRewriter[] = [addSignatureToGitCommitCommand, addSignatureToGhCommand];
 
 /**
  * PR Auto-Signature Plugin
@@ -1104,24 +1113,16 @@ export const PRSignaturePlugin: Plugin = async () => {
       // Handle bash commands (git commit, gh CLI)
       if (input.tool === "bash" && output.args?.command) {
         const command: string = output.args.command;
-
         const signature = generateSignature(currentModel);
 
-        // Handle git commit commands
-        const signedGitCommitCommand = addSignatureToGitCommitCommand(command, signature);
-        if (signedGitCommitCommand !== command) {
-          output.args.command = signedGitCommitCommand;
-          return;
-        }
+        // One line can carry both a commit and a PR — `git commit … && gh pr
+        // create …` is the everyday shape — so every rewriter gets a turn on
+        // what the previous one produced. Each returns the command unchanged
+        // when it has nothing to sign.
+        let rewritten = command;
+        for (const addSignature of BASH_REWRITERS) rewritten = addSignature(rewritten, signature);
 
-        // Handle gh CLI commands (pr create, issue create, pr comment, issue comment, pr review)
-        if (isGhCommandWithBody(command) && !hasSignature(command)) {
-          const ghMatch = command.match(/gh\s+(pr|issue)\s+(create|comment|review)\b/i);
-
-          if (ghMatch && ghMatch.index !== undefined) {
-            output.args.command = addSignatureToGhCommand(command, signature, ghMatch.index);
-          }
-        }
+        if (rewritten !== command) output.args.command = rewritten;
       }
     },
   };
