@@ -152,6 +152,43 @@ export function maskHeredocBodies(command: string): string {
 }
 
 /**
+ * If a command substitution starts at index, return the index just past it.
+ *
+ * `$(…)` and backticks are one unit of a command's text, not a boundary: the
+ * `(` inside `$(` opens a nested command, and treating it as a separator cuts
+ * an argument in half. Nesting and quoting inside are tracked so the matching
+ * `)` is the right one. Returns -1 when nothing starts here.
+ */
+export function skipCommandSubstitution(command: string, index: number): number {
+  if (command[index] === "`") {
+    for (let i = index + 1; i < command.length; i++) {
+      if (command[i] === "\\") i++;
+      else if (command[i] === "`") return i + 1;
+    }
+    return -1;
+  }
+
+  if (command[index] !== "$" || command[index + 1] !== "(") return -1;
+
+  let depth = 0;
+  let quote: string | undefined;
+  for (let i = index + 1; i < command.length; i++) {
+    const char = command[i];
+    if (quote) {
+      if (char === "\\" && quote === '"') i++;
+      else if (char === quote) quote = undefined;
+      continue;
+    }
+    if (char === "'" || char === '"') quote = char;
+    else if (char === "\\") i++;
+    else if (char === "(") depth++;
+    else if (char === ")" && --depth === 0) return i + 1;
+  }
+
+  return -1;
+}
+
+/**
  * Whether the character at index ends the command that precedes it.
  *
  * A newline separates as surely as a semicolon, `(` and `)` bound a subshell
@@ -176,12 +213,17 @@ function isSeparatorAt(command: string, index: number): boolean {
  * argument — `echo "run git commit -m x"` — and rewriting it would append
  * options to whatever command really is running.
  */
-export function findCommandStarts(command: string): Set<number> {
-  const starts = new Set<number>();
+export function findCommandStarts(command: string): Map<number, number> {
+  const starts = new Map<number, number>();
   let inSingleQuote = false;
   let inDoubleQuote = false;
   let atStart = true;
   let inAssignment = false;
+  // Where the whole simple command begins, assignment prefix included. A new
+  // pipeline stage may only be inserted there: `VAR=x ( … ) | cmd` is a
+  // syntax error, because an assignment may only be followed by a command.
+  let continuesCommand = false;
+  let pipelineStart = 0;
 
   for (let i = 0; i < command.length; i++) {
     const char = command[i];
@@ -191,23 +233,49 @@ export function findCommandStarts(command: string): Set<number> {
       inSingleQuote = !inSingleQuote;
     } else if (char === '"' && !inSingleQuote && prevChar !== "\\") {
       inDoubleQuote = !inDoubleQuote;
-    } else if (!inSingleQuote && !inDoubleQuote && isSeparatorAt(command, i)) {
-      atStart = true;
-      inAssignment = false;
-      continue;
+    } else if (!inSingleQuote && !inDoubleQuote) {
+      const afterExpansion = skipCommandSubstitution(command, i);
+      if (afterExpansion !== -1) {
+        // A substitution holds commands of its own — `OUT=$(git commit …)` is
+        // a real commit — so look inside, offsetting what is found back onto
+        // this string.
+        const innerStart = command[i] === "`" ? i + 1 : i + 2;
+        const inner = command.slice(innerStart, afterExpansion - 1);
+        for (const [start, pipeline] of findCommandStarts(inner)) {
+          starts.set(innerStart + start, innerStart + pipeline);
+        }
+        if (atStart) {
+          if (!continuesCommand) pipelineStart = i;
+          starts.set(i, pipelineStart);
+          atStart = false;
+          inAssignment = false;
+          continuesCommand = false;
+        }
+        i = afterExpansion - 1;
+        continue;
+      }
+      if (isSeparatorAt(command, i)) {
+        atStart = true;
+        inAssignment = false;
+        continuesCommand = false;
+        continue;
+      }
     }
 
     // `GIT_COMMITTER_DATE=… git commit …`: an assignment prefix leaves the
-    // word after it still in command position.
+    // word after it still in command position, and part of the same command.
     if (inAssignment && !inSingleQuote && !inDoubleQuote && /\s/.test(char)) {
       atStart = true;
       inAssignment = false;
+      continuesCommand = true;
     }
 
     if (!atStart || /\s/.test(char)) continue;
 
-    starts.add(i);
+    if (!continuesCommand) pipelineStart = i;
+    starts.set(i, pipelineStart);
     atStart = false;
+    continuesCommand = false;
 
     const word = readShellWord(command, i);
     if (word && /^[A-Za-z_][A-Za-z0-9_]*=/.test(word.value)) inAssignment = true;
@@ -258,6 +326,11 @@ export function findCommandEndIndex(command: string, startIndex: number): number
     } else if (char === '"' && !inSingleQuote && prevChar !== "\\") {
       inDoubleQuote = !inDoubleQuote;
     } else if (!inSingleQuote && !inDoubleQuote) {
+      const afterExpansion = skipCommandSubstitution(command, i);
+      if (afterExpansion !== -1) {
+        i = afterExpansion;
+        continue;
+      }
       // A `#` opens a comment that would swallow anything appended after it.
       if (isSeparatorAt(command, i)) return i;
       if (char === "#" && (i === startIndex || /\s/.test(prevChar))) return i;
@@ -266,6 +339,101 @@ export function findCommandEndIndex(command: string, startIndex: number): number
   }
 
   return command.length;
+}
+
+/**
+ * What is feeding a command's standard input, as far as its own text says.
+ *
+ * "none" still leaves the pipeline: a command with no redirect of its own may
+ * be downstream of a `|`, which hasPrecedingPipe answers separately.
+ */
+export type StdinRedirect =
+  | { kind: "none" }
+  | { kind: "heredoc" }
+  | { kind: "file"; token: string; start: number; end: number }
+  | { kind: "string"; token: string; start: number; end: number }
+  | { kind: "unknown" };
+
+/**
+ * Find what redirects a command's standard input, within one command's text.
+ *
+ * Output redirections are skipped: they say nothing about where the message
+ * comes from. Anything else that touches descriptor 0 in a way not modelled
+ * here answers "unknown", so callers decline rather than guess.
+ */
+export function findStdinRedirect(command: string): StdinRedirect {
+  let found: StdinRedirect = { kind: "none" };
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i];
+    const prevChar = i > 0 ? command[i - 1] : "";
+
+    if (char === "'" && !inDoubleQuote && prevChar !== "\\") {
+      inSingleQuote = !inSingleQuote;
+      continue;
+    }
+    if (char === '"' && !inSingleQuote && prevChar !== "\\") {
+      inDoubleQuote = !inDoubleQuote;
+      continue;
+    }
+    if (inSingleQuote || inDoubleQuote) continue;
+
+    const afterExpansion = skipCommandSubstitution(command, i);
+    if (afterExpansion !== -1) {
+      i = afterExpansion - 1;
+      continue;
+    }
+    if (char !== "<") continue;
+
+    // A digit run immediately before `<` is a file descriptor only when it
+    // stands alone; in `out1<x` those digits end a word and the redirection
+    // is still stdin's. Read the whole run — `10<` is not descriptor 0.
+    let digitsStart = i;
+    while (digitsStart > 0 && /[0-9]/.test(command[digitsStart - 1] ?? "")) digitsStart--;
+    const bareDescriptor = digitsStart < i && (digitsStart === 0 || /[\s;|&<>()]/.test(command[digitsStart - 1] ?? ""));
+    const descriptor = bareDescriptor ? command.slice(digitsStart, i) : "";
+    const redirectsStdin = !bareDescriptor || descriptor === "0";
+    const start = bareDescriptor ? digitsStart : i;
+
+    if (command[i + 1] === "<") {
+      if (command[i + 2] === "<") {
+        const word = readShellWord(command, i + 3);
+        if (!word || !redirectsStdin) return { kind: "unknown" };
+        if (found.kind !== "none") return { kind: "unknown" };
+        found = { kind: "string", token: word.raw, start, end: word.end };
+        i = word.end - 1;
+        continue;
+      }
+      // A heredoc: its body is the message, handled where heredocs are.
+      if (found.kind !== "none") return { kind: "unknown" };
+      found = { kind: "heredoc" };
+      i += 1;
+      continue;
+    }
+
+    const word = readShellWord(command, i + 1);
+    if (!word || !redirectsStdin) return { kind: "unknown" };
+    if (found.kind !== "none") return { kind: "unknown" };
+    found = { kind: "file", token: word.raw, start, end: word.end };
+    i = word.end - 1;
+  }
+
+  return found;
+}
+
+/**
+ * Whether the command starting at index is downstream of a pipe.
+ *
+ * It matters twice over: such a command already has its standard input spoken
+ * for, and inserting a stage that ignores that input would leave the producer
+ * writing into a pipe nobody reads.
+ */
+export function hasPrecedingPipe(command: string, startIndex: number): boolean {
+  let i = startIndex - 1;
+  while (i >= 0 && /\s/.test(command[i] ?? "")) i--;
+  return i >= 0 && command[i] === "|" && command[i - 1] !== "|";
 }
 
 /**
@@ -284,11 +452,59 @@ export type ShellWord = {
   end: number;
 };
 
-/** Read the limited shell word syntax used for command options. */
+/**
+ * The raw text of a value attached to an option — the `msg.txt` of
+ * `-Fmsg.txt`, the `"my msg.txt"` of `--file="my msg.txt"`.
+ *
+ * Raw text is returned rather than the unquoted value so the caller can pass
+ * it back to the shell and have it expand as the user wrote it. Returns
+ * undefined when the option was quoted as a whole (`"-Fmsg.txt"`): then the
+ * prefix and the raw text no longer line up character for character, and
+ * slicing would cut a quote in half and leave the command unparseable.
+ */
+/**
+ * Whether raw text carries a pathname-expansion character outside quotes.
+ *
+ * A glob names however many files match, which a single reader cannot stand
+ * in for: git takes the first match as the message and the rest as pathspecs,
+ * while `cat` would concatenate them all into one message.
+ */
+export function hasUnquotedGlob(raw: string): boolean {
+  let quote: string | undefined;
+  for (let i = 0; i < raw.length; i++) {
+    const char = raw[i];
+    if (quote) {
+      if (char === quote) quote = undefined;
+      continue;
+    }
+    if (char === "'" || char === '"') quote = char;
+    else if (char === "\\") i++;
+    else if (char === "*" || char === "?" || char === "[") return true;
+  }
+  return false;
+}
+
+export function attachedValue(word: ShellWord, prefix: string): string | undefined {
+  if (word.value.length <= prefix.length || !word.value.startsWith(prefix)) return undefined;
+  if (!word.raw.startsWith(prefix)) return undefined;
+  return word.raw.slice(prefix.length);
+}
+
+/** Characters that end a word rather than belong to it. */
+const WORD_TERMINATORS = /[;|&<>]/;
+
+/**
+ * Read the limited shell word syntax used for command options.
+ *
+ * A redirection operator ends the word: in `-F msg.txt>out.log` the path is
+ * `msg.txt`, and swallowing the `>out.log` would redirect away the very text
+ * the caller is about to read. An unquoted `$(…)` is carried whole, because
+ * its inner `;` and `)` belong to the nested command, not to this word.
+ */
 export function readShellWord(command: string, startIndex: number): ShellWord | undefined {
   let start = startIndex;
   while (/\s/.test(command[start] ?? "")) start++;
-  if (!command[start] || /[;|&]/.test(command[start])) return undefined;
+  if (!command[start] || WORD_TERMINATORS.test(command[start])) return undefined;
 
   let value = "";
   let quote: "'" | '"' | undefined;
@@ -304,11 +520,22 @@ export function readShellWord(command: string, startIndex: number): ShellWord | 
       } else {
         value += char;
       }
-    } else if (char === "'" || char === '"') {
+      i++;
+      continue;
+    }
+
+    const afterExpansion = skipCommandSubstitution(command, i);
+    if (afterExpansion !== -1) {
+      value += command.slice(i, afterExpansion);
+      i = afterExpansion;
+      continue;
+    }
+
+    if (char === "'" || char === '"') {
       quote = char;
     } else if (char === "\\" && i + 1 < command.length) {
       value += command[++i];
-    } else if (/\s/.test(char) || /[;|&]/.test(char)) {
+    } else if (/\s/.test(char) || WORD_TERMINATORS.test(char)) {
       break;
     } else {
       value += char;

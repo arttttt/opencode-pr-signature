@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PRSignaturePlugin } from "../src/plugin";
@@ -50,6 +50,38 @@ function createRepository(): string {
 
 function commitMessage(directory: string): string {
   return run(directory, "git log -1 --format=%B");
+}
+
+/**
+ * Run a gh command against a stub `gh` that reports the --body it was handed,
+ * so the generated shell is verified by execution without the real CLI.
+ */
+async function runGh(
+  command: string,
+  files: Record<string, string> = {},
+): Promise<{ body: string | undefined; directory: string }> {
+  const directory = mkdtempSync(join(tmpdir(), "opencode-pr-signature-gh-"));
+  directories.push(directory);
+  const bin = join(directory, "bin");
+  mkdirSync(bin);
+  // Writes the --body it was handed, and records its absence separately, so a
+  // rewrite that dropped the flag cannot be mistaken for one that passed an
+  // empty body.
+  writeFileSync(
+    join(bin, "gh"),
+    '#!/bin/sh\nwhile [ $# -gt 0 ]; do\n  if [ "$1" = "--body" ]; then printf %s "$2" > body.out; exit 0; fi\n  shift\ndone\nprintf no-body > absent.out\n',
+  );
+  chmodSync(join(bin, "gh"), 0o755);
+  for (const [name, content] of Object.entries(files)) writeFileSync(join(directory, name), content);
+
+  execFileSync("/bin/sh", ["-c", command], {
+    cwd: directory,
+    encoding: "utf8",
+    env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
+  });
+
+  if (existsSync(join(directory, "absent.out"))) return { body: undefined, directory };
+  return { body: readFileSync(join(directory, "body.out"), "utf8"), directory };
 }
 
 /** Rewrite, execute for real, and report the message git actually stored. */
@@ -159,38 +191,279 @@ describe("git commit with a heredoc message", () => {
   });
 });
 
-describe("messages the plugin refuses to touch", () => {
-  // Every one of these names content the plugin cannot see. Rewriting them
-  // meant reading the wrong bytes, or taking stdin away from git and
-  // committing the signature alone — with exit status 0.
+describe("git commit with a message file", () => {
+  /** Write msg.txt in a fresh repository, run the signed command, report both. */
+  async function commitFromFile(command: string, content: string, name = "msg.txt") {
+    const directory = createRepository();
+    writeFileSync(join(directory, name), content);
+    let status = 0;
+    try {
+      run(directory, await sign(command));
+    } catch (error) {
+      status = (error as { status?: number }).status ?? -1;
+    }
+    let message: string | undefined;
+    try {
+      message = commitMessage(directory);
+    } catch {
+      message = undefined;
+    }
+    return { message, status, file: readFileSync(join(directory, name), "utf8") };
+  }
+
   test.each([
-    ["a message file", "git commit -F 'commit message.txt'"],
-    ["a message file by long option", "git commit --file=message.txt"],
-    ["a piped message", "printf 'subject\\n' | git commit -F-"],
-    ["a redirected message", "git commit -F- < message.txt"],
-    ["a here-string message", 'git commit -F- <<< "subject"'],
-    ["a message file mixed with -m", 'git commit -m "subject" -F message.txt'],
-  ])("returns the command unchanged for %s", async (_name, command) => {
+    ["git commit -F msg.txt", "-F <path>"],
+    ["git commit --file=msg.txt", "--file=<path>"],
+    ["git commit -Fmsg.txt", "attached -F<path>"],
+  ])("signs %p", async (command) => {
+    const { message, file } = await commitFromFile(command, "subject\n\nbody\n");
+
+    expect(message).toBe(`subject\n\nbody\n\n${signature}\n\n`);
+    // The message the user wrote is read, never rewritten.
+    expect(file).toBe("subject\n\nbody\n");
+  });
+
+  test("keeps a message whose text looks like shell syntax", async () => {
+    const { message } = await commitFromFile("git commit -F msg.txt", "fix: a; b && c | d\n");
+
+    expect(message).toBe(`fix: a; b && c | d\n\n${signature}\n\n`);
+  });
+
+  test("does not sign a file that is already signed", async () => {
+    const { message } = await commitFromFile("git commit -F msg.txt", `subject\n\n${signature}\n`);
+
+    expect(message).toBe(`subject\n\n${signature}\n\n`);
+  });
+
+  // git refuses an empty message; appending a signature would have turned that
+  // refusal into a commit whose whole message is the signature.
+  test.each([
+    ["an empty file", ""],
+    ["a blank file", "   \n\n"],
+  ])("makes no commit from %s", async (_name, content) => {
+    const { message, status } = await commitFromFile("git commit -F msg.txt", content);
+
+    expect(message).toBeUndefined();
+    expect(status).not.toBe(0);
+  });
+
+  test("resolves the path in the shell, so expansions still work", async () => {
+    const directory = createRepository();
+    writeFileSync(join(directory, "msg.txt"), "subject\n");
+
+    run(directory, `MSGFILE=msg.txt; ${await sign('git commit -F "$MSGFILE"')}`);
+
+    expect(commitMessage(directory)).toBe(`subject\n\n${signature}\n\n`);
+  });
+
+  test("leaves a command whose input is already piped alone", async () => {
+    const command = "printf x | git commit -F msg.txt";
+
     expect(await sign(command)).toBe(command);
   });
 
-  test("a message file is neither read nor modified, and its commit still works", async () => {
+  test("survives an environment assignment in front of the commit", async () => {
     const directory = createRepository();
-    const messageFile = join(directory, "commit message.txt");
-    writeFileSync(messageFile, "subject\n\nbody\n");
+    writeFileSync(join(directory, "msg.txt"), "subject\n");
 
-    run(directory, await sign("git commit -F 'commit message.txt'"));
+    run(directory, await sign('GIT_AUTHOR_NAME="Someone Else" git commit -F msg.txt'));
 
-    expect(commitMessage(directory)).toBe("subject\n\nbody\n\n");
-    expect(readFileSync(messageFile, "utf8")).toBe("subject\n\nbody\n");
+    expect(commitMessage(directory)).toBe(`subject\n\n${signature}\n\n`);
+    expect(run(directory, "git log -1 --format=%an")).toBe("Someone Else\n");
   });
 
-  test("a piped message reaches git intact", async () => {
+  test("keeps a redirection that is written without a space", async () => {
+    const directory = createRepository();
+    writeFileSync(join(directory, "msg.txt"), "subject\n");
+
+    run(directory, await sign("git commit -F msg.txt>out.log"));
+
+    expect(commitMessage(directory)).toBe(`subject\n\n${signature}\n\n`);
+    expect(readFileSync(join(directory, "out.log"), "utf8")).toContain("subject");
+  });
+
+  test("reads a path produced by a command substitution", async () => {
+    const directory = createRepository();
+    writeFileSync(join(directory, "msg.txt"), "subject\n");
+
+    run(directory, await sign("git commit -F $(echo msg.txt)"));
+
+    expect(commitMessage(directory)).toBe(`subject\n\n${signature}\n\n`);
+  });
+
+  test("signs a commit captured by a command substitution", async () => {
+    const directory = createRepository();
+    writeFileSync(join(directory, "msg.txt"), "subject\n");
+
+    // The stage must not touch the `$(` in front of it: `$((` opens an
+    // arithmetic expansion, which a POSIX shell rejects outright.
+    run(directory, await sign("OUT=$(git commit -F msg.txt); printf '%s' \"$OUT\" > captured.log"));
+
+    expect(commitMessage(directory)).toBe(`subject\n\n${signature}\n\n`);
+    expect(readFileSync(join(directory, "captured.log"), "utf8")).toContain("subject");
+  });
+
+  test.each([
+    ["a whole option in quotes", 'git commit "-Fmsg.txt"'],
+    ["a whole long option in quotes", 'git commit "--file=msg.txt"'],
+    ["a glob naming more than one file", "git commit -F *.txt"],
+    ["a descriptor other than standard input", "git commit -F - 10<msg.txt"],
+  ])("declines %s", async (_name, command) => {
+    expect(await sign(command)).toBe(command);
+  });
+});
+
+describe("messages git itself would refuse", () => {
+  // Appending a signature would turn git's refusal into a commit whose whole
+  // message is the signature.
+  test.each([['git commit -m ""', "an empty -m"], ["git commit -m '   '", "a blank -m"]])(
+    "declines %p so git still refuses",
+    async (command) => {
+      expect(await sign(command)).toBe(command);
+    },
+  );
+
+  test("still signs when one of several -m paragraphs has text", async () => {
+    const rewritten = await sign('git commit -m "" -m "subject"');
+
+    expect(rewritten).toBe(`git commit -m "" -m "subject" -m '${signature}'`);
+  });
+});
+
+describe("git commit -F- fed by a redirect", () => {
+  test.each([
+    ["git commit -F- < msg.txt", "spaced"],
+    ["git commit -F- <msg.txt", "unspaced"],
+    ["git commit -F- 0< msg.txt", "with an explicit descriptor"],
+  ])("signs %p", async (command) => {
+    const directory = createRepository();
+    writeFileSync(join(directory, "msg.txt"), "subject\n\nbody\n");
+
+    run(directory, await sign(command));
+
+    expect(commitMessage(directory)).toBe(`subject\n\nbody\n\n${signature}\n\n`);
+    expect(readFileSync(join(directory, "msg.txt"), "utf8")).toBe("subject\n\nbody\n");
+  });
+
+  test("keeps an output redirection on the command it belongs to", async () => {
+    const directory = createRepository();
+    writeFileSync(join(directory, "msg.txt"), "subject\n");
+
+    run(directory, await sign("git commit -F- < msg.txt > out.log"));
+
+    expect(commitMessage(directory)).toBe(`subject\n\n${signature}\n\n`);
+    expect(readFileSync(join(directory, "out.log"), "utf8")).toContain("subject");
+  });
+
+  test("makes no commit when the redirected file is empty", async () => {
+    const directory = createRepository();
+    writeFileSync(join(directory, "msg.txt"), "");
+    const rewritten = await sign("git commit -F- < msg.txt");
+
+    expect(() => run(directory, rewritten)).toThrow();
+    expect(() => commitMessage(directory)).toThrow();
+  });
+
+  // Executed under bash rather than /bin/sh: a here-string is the user's own
+  // syntax, so their shell already supports it, but dash does not.
+  test("signs a here-string, expansion intact", async () => {
+    const directory = createRepository();
+    const rewritten = await sign('git commit -F- <<< "subject $NAME"');
+
+    execFileSync("/bin/bash", ["-c", rewritten], { cwd: directory, env: { ...process.env, NAME: "World" } });
+
+    expect(commitMessage(directory)).toBe(`subject World\n\n${signature}\n\n`);
+  });
+});
+
+describe("git commit -F- fed by a pipe", () => {
+  test("signs the piped message", async () => {
     const directory = createRepository();
 
-    run(directory, await sign("printf 'subject\\n' | git commit -F-"));
+    run(directory, await sign("printf 'subject\\n\\nbody\\n' | git commit -F-"));
 
-    expect(commitMessage(directory)).toBe("subject\n\n");
+    expect(commitMessage(directory)).toBe(`subject\n\nbody\n\n${signature}\n\n`);
+  });
+
+  test("does not sign a piped message that already carries the signature", async () => {
+    const directory = createRepository();
+
+    run(directory, await sign(`printf 'subject\\n\\n${signature}\\n' | git commit -F-`));
+
+    expect(commitMessage(directory).match(/Generated with \[OpenCode\]/g)).toHaveLength(1);
+  });
+
+  test("makes no commit when the producer writes nothing", async () => {
+    const directory = createRepository();
+    const rewritten = await sign("printf '' | git commit -F-");
+
+    expect(() => run(directory, rewritten)).toThrow();
+    expect(() => commitMessage(directory)).toThrow();
+  });
+
+  test("keeps a command chained after the pipeline", async () => {
+    const directory = createRepository();
+
+    run(directory, await sign("printf 'subject\\n' | git commit -F- && git tag done"));
+
+    expect(commitMessage(directory)).toBe(`subject\n\n${signature}\n\n`);
+    expect(run(directory, "git tag")).toBe("done\n");
+  });
+});
+
+describe("git commit --amend --no-edit", () => {
+  /** A repository whose HEAD carries `subject`, with something else staged. */
+  function repositoryWithCommit(subject: string): string {
+    const directory = createRepository();
+    run(directory, `git commit -q -m ${JSON.stringify(subject)}`);
+    writeFileSync(join(directory, "tracked.txt"), "changed\n");
+    run(directory, "git add tracked.txt");
+    return directory;
+  }
+
+  test("signs the message it is reusing", async () => {
+    const directory = repositoryWithCommit("subject");
+
+    run(directory, await sign("git commit --amend --no-edit"));
+
+    expect(commitMessage(directory)).toBe(`subject\n\n${signature}\n\n`);
+  });
+
+  test("keeps the original author and author date", async () => {
+    const directory = repositoryWithCommit("subject");
+    const before = run(directory, "git log -1 --format='%an|%ae|%ad'");
+
+    run(directory, await sign("git commit --amend --no-edit"));
+
+    expect(run(directory, "git log -1 --format='%an|%ae|%ad'")).toBe(before);
+  });
+
+  test("does not sign twice when amended again", async () => {
+    const directory = repositoryWithCommit("subject");
+    run(directory, await sign("git commit --amend --no-edit"));
+    writeFileSync(join(directory, "tracked.txt"), "changed again\n");
+    run(directory, "git add tracked.txt");
+
+    run(directory, await sign("git commit --amend --no-edit"));
+
+    expect(commitMessage(directory).match(/Generated with \[OpenCode\]/g)).toHaveLength(1);
+  });
+});
+
+describe("messages the plugin refuses to touch", () => {
+  test.each([
+    ["a message file mixed with -m", 'git commit -m "subject" -F message.txt'],
+    ["a message file whose input is already piped", "printf x | git commit -F msg.txt"],
+    ["stdin with nothing visible feeding it", "git commit -F-"],
+    // The message does not exist yet: the user is about to write it.
+    ["an amend that opens the editor", "git commit --amend"],
+    ["a commit that opens the editor", "git commit"],
+    // -C and -c copy the author and author date too; -F would reset both.
+    ["a message reused from another commit", "git commit -C HEAD~1"],
+    ["a message reedited from another commit", "git commit -c HEAD~1"],
+    ["--reuse-message", "git commit --reuse-message=HEAD~1"],
+  ])("returns the command unchanged for %s", async (_name, command) => {
+    expect(await sign(command)).toBe(command);
   });
 });
 
@@ -260,12 +533,50 @@ describe("gh commands", () => {
     );
   });
 
-  // Adding a second --body would make gh use ours and drop the user's text.
+  test("signs a body held in a variable, without re-quoting it", async () => {
+    const { body } = await runGh(`PR_BODY='hello there'; ${await sign('gh pr create --body "$PR_BODY"')}`);
+
+    expect(body).toBe(`hello there\n\n${signature}`);
+  });
+
+  test("does not sign a variable that already carries the signature", async () => {
+    const command = await sign('gh pr create --body "$PR_BODY"');
+    const { body } = await runGh(`PR_BODY='done ${signature}'; ${command}`);
+
+    expect(body).toBe(`done ${signature}`);
+  });
+
+  // Reading the file in a substitution would discard cat's exit status, so an
+  // unreadable file would become an empty body and a gh run that reports
+  // success. Until the body can be piped in with the status intact, decline.
   test.each([
-    ['gh pr create --body "$PR_BODY"', "a body from a variable"],
-    ['gh pr create --body "$(cat msg.md)"', "a body from a substitution"],
-    ["gh pr create --body-file msg.md", "a body from a file"],
-  ])("refuses %p rather than replacing it", async (command) => {
+    ["gh pr create --body-file msg.md", "--body-file <path>"],
+    ["gh pr create --body-file=msg.md", "--body-file=<path>"],
+    ["gh pr create -F msg.md", "-F <path>"],
+    ["gh pr create -Fmsg.md", "attached -F<path>"],
+    ["gh pr create --body-file -", "--body-file -"],
+  ])("leaves %p alone rather than dropping the file's exit status", async (command) => {
+    expect(await sign(command)).toBe(command);
+  });
+
+  test("evaluates the user's expression exactly once", async () => {
+    const { body, directory } = await runGh(await sign('gh pr create --body "$(sh ./produce.sh)"'), {
+      "produce.sh": 'echo call >> calls.log\nprintf "%s" "from a command"\n',
+    });
+
+    expect(body).toBe(`from a command\n\n${signature}`);
+    expect(readFileSync(join(directory, "calls.log"), "utf8")).toBe("call\n");
+  });
+
+  test("a body that expands to nothing stays empty", async () => {
+    const { body } = await runGh(`PR_BODY=''; ${await sign('gh pr create --body "$PR_BODY"')}`);
+
+    expect(body).toBe("");
+  });
+
+  test("still refuses a body it cannot name", async () => {
+    const command = "gh pr create --body-file -";
+
     expect(await sign(command)).toBe(command);
   });
 
@@ -285,10 +596,25 @@ describe("one line carrying both a commit and a pull request", () => {
     );
   });
 
-  test("still signs the pull request when the commit cannot be signed", async () => {
+  test("signs a message-file commit and the pull request body", async () => {
     const rewritten = await sign('git commit -F msg.txt && gh pr create --title t --body "hello"');
+    const [commitHalf, ghHalf] = rewritten.split("&& gh ");
 
-    expect(rewritten).toBe(`git commit -F msg.txt && gh pr create --title t --body 'hello\n\n${signature}'`);
+    const directory = createRepository();
+    writeFileSync(join(directory, "msg.txt"), "subject\n");
+    run(directory, commitHalf!);
+    const { body } = await runGh(`gh ${ghHalf}`);
+
+    expect(commitMessage(directory)).toBe(`subject\n\n${signature}\n\n`);
+    expect(body).toBe(`hello\n\n${signature}`);
+  });
+
+  test("still signs the pull request when the commit cannot be signed", async () => {
+    const rewritten = await sign('printf x | git commit -F msg.txt && gh pr create --title t --body "hello"');
+
+    expect(rewritten).toBe(
+      `printf x | git commit -F msg.txt && gh pr create --title t --body 'hello\n\n${signature}'`,
+    );
   });
 });
 

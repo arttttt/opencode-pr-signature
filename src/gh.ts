@@ -3,7 +3,9 @@
  */
 
 import { hasSignature } from "./signature";
+import { signedValueSubstitution } from "./signed-message";
 import {
+  attachedValue,
   findCommandEndIndex,
   findCommandMatch,
   maskHeredocBodies,
@@ -24,7 +26,10 @@ const GH_COMMAND_PATTERN = /gh\s+(pr|issue)\s+(create|comment|review)\b/i;
 type GhBodyOption =
   | { kind: "absent" }
   | { kind: "unsupported" }
-  | { kind: "present"; value: string; start: number; end: number };
+  /** A body written out in the command; its text is known here. */
+  | { kind: "static"; value: string; start: number; end: number }
+  /** A body that only exists once the shell expands it. */
+  | { kind: "dynamic"; expression: string; start: number; end: number };
 
 /**
  * Locate the --body/-b value of a gh command, in any of the spellings gh
@@ -43,23 +48,31 @@ function findGhBodyOption(command: string): GhBodyOption {
     if (word.value === "--body" || word.value === "-b") {
       const value = readShellWord(command, index);
       if (!value) return { kind: "unsupported" };
-      if (/[$`]/.test(value.raw)) return { kind: "unsupported" };
-      return { kind: "present", value: value.value, start: word.start, end: value.end };
+      return /[$`]/.test(value.raw)
+        ? { kind: "dynamic", expression: value.raw, start: word.start, end: value.end }
+        : { kind: "static", value: value.value, start: word.start, end: value.end };
     }
 
-    let inline: { value: string; offset: number } | undefined;
-    if (word.value.startsWith("--body=")) inline = { value: word.value.slice(7), offset: 7 };
-    else if (word.value.startsWith("-b") && word.value.length > 2) {
-      inline = { value: word.value.slice(2), offset: 2 };
+    const prefix = word.value.startsWith("--body=") ? "--body=" : word.value.startsWith("-b") ? "-b" : undefined;
+    if (prefix) {
+      const raw = attachedValue(word, prefix);
+      // The option was quoted as a whole ("--body=x"), so its prefix and its
+      // raw text no longer line up and slicing would break the command.
+      if (raw === undefined) return { kind: "unsupported" };
+      return /[$`]/.test(raw)
+        ? { kind: "dynamic", expression: raw, start: word.start, end: word.end }
+        : { kind: "static", value: word.value.slice(prefix.length), start: word.start, end: word.end };
     }
 
-    if (inline) {
-      if (/[$`]/.test(word.raw.slice(inline.offset))) return { kind: "unsupported" };
-      return { kind: "present", value: inline.value, start: word.start, end: word.end };
-    }
-
-    // A body read from a file or from stdin is not ours to rewrite.
-    if (word.value === "--body-file" || word.value.startsWith("--body-file=") || word.value === "-F") {
+    // A body read from a file or from standard input is not ours to rewrite.
+    // Reading it in a substitution would discard the reader's exit status, so
+    // an unreadable file would become an empty body and a successful gh run.
+    if (
+      word.value === "--body-file" ||
+      word.value === "-F" ||
+      word.value.startsWith("--body-file=") ||
+      word.value.startsWith("-F")
+    ) {
       return { kind: "unsupported" };
     }
   }
@@ -69,8 +82,11 @@ function findGhBodyOption(command: string): GhBodyOption {
 
 /**
  * Add signature to a gh CLI command: gh pr/issue create, comment or review.
- * If --body/-b exists, append the signature to its value; otherwise add the
- * flag. Returns the command unchanged when the body cannot be rewritten.
+ * A body written out in the command is rewritten in place; one that only
+ * exists once the shell expands it is wrapped in a substitution that signs it
+ * at that moment; a command with no body gets the flag added. Returns the
+ * command unchanged when the body is not ours to rewrite — read from a file
+ * or from standard input, or spelled in a way this cannot take apart safely.
  */
 export function addSignatureToGhCommand(command: string, signature: string): string {
   const scan = maskHeredocBodies(command);
@@ -103,7 +119,11 @@ export function addSignatureToGhCommand(command: string, signature: string): str
 
   // Real newlines: gh receives the body as one shell argument, where a
   // literal "\n" would stay two characters.
-  const signed = quoteShellArgument(body.value.trimEnd() + "\n\n" + signature);
+  const signed =
+    body.kind === "static"
+      ? quoteShellArgument(body.value.trimEnd() + "\n\n" + signature)
+      : signedValueSubstitution(body.expression, signature);
+
   const rewritten = commandPart.slice(0, body.start) + `--body ${signed}` + commandPart.slice(body.end);
   return beforeCommand + rewritten + afterCommand;
 }
