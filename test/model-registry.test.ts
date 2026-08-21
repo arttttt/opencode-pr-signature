@@ -136,7 +136,7 @@ describe("model registry", () => {
   test("concurrent ensureFresh shares ONE fetch", async () => {
     const gate = deferred();
     let calls = 0;
-    const { reg } = registry({
+    const { reg, advance } = registry({
       store: fakeStore(null),
       fetchCatalogue: () => {
         calls++;
@@ -144,6 +144,9 @@ describe("model registry", () => {
       },
     });
     const first = reg.ensureFresh();
+    // Past the backoff window with the first attempt still pending: only the
+    // single-flight guard can keep this from starting a second fetch.
+    advance(2 * HOUR);
     const second = reg.ensureFresh();
     gate.resolve(bodyOf(bigCatalogue()));
     await Promise.all([first, second]);

@@ -19,13 +19,10 @@ import { dirname, join, normalize, relative, sep } from "node:path";
 
 const SRC_DIR = join(import.meta.dir, "..", "src");
 
-type Layer = "domain" | "app" | "infra" | "root-plugin" | "root-models";
+type Layer = "domain" | "app" | "infra" | "root-plugin";
 
-/** TRANSIENT: src/models.ts leaves with the model-catalogue feature — remove
- *  this entry from the table when that deletion lands. */
 const ROOT_FILES: Record<string, Layer> = {
   "plugin.ts": "root-plugin",
-  "models.ts": "root-models",
 };
 
 const LAYER_DIRS = new Set(["domain", "app", "infra"]);
@@ -76,8 +73,7 @@ const ALLOWED_TARGETS: Record<Layer, Set<string>> = {
   domain: new Set(["domain"]),
   app: new Set(["domain", "app"]),
   infra: new Set(["domain", "app", "infra"]),
-  "root-plugin": new Set(["domain", "app", "infra", "root-plugin", "root-models"]),
-  "root-models": new Set(["domain", "root-models"]),
+  "root-plugin": new Set(["domain", "app", "infra", "root-plugin"]),
 };
 
 const BARE_ALLOWED: Record<Layer, (spec: string) => boolean> = {
@@ -85,7 +81,6 @@ const BARE_ALLOWED: Record<Layer, (spec: string) => boolean> = {
   app: () => false,
   infra: (spec) => spec.startsWith("node:"),
   "root-plugin": () => true,
-  "root-models": () => false,
 };
 
 describe("layer boundaries", () => {

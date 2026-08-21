@@ -83,14 +83,12 @@ export function createModelRegistry(opts: RegistryOptions): ModelRegistry {
       if (catalogue === null || catalogue.models.length < minEntries) return;
       index = prepareModels(catalogue);
       fetchedAt = now();
-      try {
-        opts.store.write({ fetchedAt, models: catalogue.models });
-      } catch {
-        // The swap stands and freshness advanced — a read-only cache home
-        // must not turn into a refetch storm on every message.
-      }
+      // A persist failure here lands in the same catch: the swap stands and
+      // freshness advanced — a read-only cache home must not turn into a
+      // refetch storm on every message.
+      opts.store.write({ fetchedAt, models: catalogue.models });
     } catch {
-      // Network or parse failure: keep serving what we have.
+      // Network, parse, or persist failure: keep serving what we have.
     }
   }
 
