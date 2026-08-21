@@ -9,10 +9,10 @@
 
 import type { Plugin } from "@opencode-ai/plugin";
 
-import { addSignatureToGhCommand } from "./gh";
-import { addSignatureToGitCommitCommand } from "./git-commit";
+import { addSignatureToGhCommand } from "./domain/gh";
+import { addSignatureToGitCommitCommand } from "./domain/git-commit";
 import { formatModelName } from "./models";
-import { generateSignature, hasSignature } from "./signature";
+import { generateSignature, hasSignature } from "./domain/signature";
 
 /**
  * Adds the signature to one kind of command, or returns it untouched.
