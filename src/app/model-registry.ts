@@ -57,7 +57,12 @@ export function createModelRegistry(opts: RegistryOptions): ModelRegistry {
   let inFlight: Promise<void> | null = null;
 
   function seedFromCache(): void {
-    const cache = opts.store.read();
+    let cache: ReturnType<ModelCacheStorePort["read"]>;
+    try {
+      cache = opts.store.read();
+    } catch {
+      return; // plugin init must never fail on an exploding store
+    }
     if (cache === null) return;
     index = prepareModels({ models: cache.models });
     fetchedAt = cache.fetchedAt;
@@ -74,7 +79,7 @@ export function createModelRegistry(opts: RegistryOptions): ModelRegistry {
     return displayModelId(id);
   }
 
-  async function attempt(t: number): Promise<void> {
+  async function attempt(): Promise<void> {
     try {
       const body = await opts.fetchCatalogue(new AbortController().signal);
       const catalogue = parseCatalogueResponse(body);
@@ -98,7 +103,7 @@ export function createModelRegistry(opts: RegistryOptions): ModelRegistry {
     if (fetchedAt > 0 && t - fetchedAt < freshForMs) return Promise.resolve();
     if (t - lastAttempt < failureBackoffMs) return Promise.resolve();
     lastAttempt = t;
-    inFlight = attempt(t).finally(() => {
+    inFlight = attempt().finally(() => {
       inFlight = null;
     });
     return inFlight;

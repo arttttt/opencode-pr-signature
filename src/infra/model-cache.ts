@@ -43,6 +43,8 @@ export function createModelCacheStore(
       mkdirSync(dirname(path), { recursive: true });
       const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
       writeFileSync(tmp, serializeCache(cache.fetchedAt, cache.models));
+      // A rename failure could strand this uuid-named tmp behind; same-dir
+      // renames nearly never fail, so residue cleanup is not worth the code.
       renameSync(tmp, path);
     },
   };

@@ -214,7 +214,7 @@ describe("model registry", () => {
     expect(reg.get("glm-5.3")).toBe("GLM 5.3"); // no swap to the tiny catalogue
   });
 
-  test("persist failure: the swap stands and freshness advances (no refetch storm)", async () => {
+  test("persist failure: the swap stands and no further fetch happens (no refetch storm)", async () => {
     const store = fakeStore({ fetchedAt: 1, models: [{ id: "z-ai/glm-5.3", name: "GLM 5.3" }] });
     const failing: ModelCacheStorePort = {
       read: store.read,
@@ -222,17 +222,26 @@ describe("model registry", () => {
         throw new Error("read-only home");
       },
     };
+    let calls = 0;
     const { reg, advance } = registry({
       store: failing,
-      fetchCatalogue: async () => bodyOf(bigCatalogue()),
+      fetchCatalogue: async () => {
+        calls++;
+        return bodyOf(bigCatalogue());
+      },
       t: 25 * HOUR,
     });
     reg.seedFromCache();
     await reg.ensureFresh();
     expect(reg.get("glm-9.9")).toBe("GLM 9.9"); // swapped in
 
-    advance(30 * 60 * 1000); // within 24h of the (in-memory) fetch
-    await reg.ensureFresh(); // must be a no-op, not another fetch
+    // Past the failure backoff (1h) but inside the freshness TTL: with the
+    // backoff hold released, a second fetch here would prove freshness did
+    // NOT advance — exactly one call proves it did. Counting the calls makes
+    // the test self-sufficient: it no longer leans on the name still serving.
+    advance(2 * HOUR);
+    await reg.ensureFresh();
+    expect(calls).toBe(1); // freshness advanced in memory — nothing retried
     expect(reg.get("glm-9.9")).toBe("GLM 9.9");
   });
 
