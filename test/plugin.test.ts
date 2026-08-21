@@ -12,9 +12,17 @@ const directories: string[] = [];
  * Drive the plugin the way OpenCode does: report a model, then hand the hook a
  * tool call and read back what it rewrote. Testing through the hook is what
  * makes the git/gh dispatch, and the model formatting, testable at all.
+ *
+ * The registry wiring gets a throwaway cache path and a fetch that never
+ * resolves, so the suite stays offline and never touches the real cache.
  */
 async function hooks() {
-  const plugin = await PRSignaturePlugin({} as never);
+  const cacheDir = mkdtempSync(join(tmpdir(), "opencode-pr-signature-hooks-"));
+  directories.push(cacheDir);
+  const plugin = await PRSignaturePlugin({} as never, {
+    cachePath: join(cacheDir, "models.jsonl"),
+    fetchCatalogue: () => new Promise(() => {}),
+  });
   await plugin["chat.message"]!({ model: { providerID: "anthropic", modelID: "claude-opus-4" } } as never, {} as never);
   return plugin;
 }

@@ -7,12 +7,17 @@
  * @license Apache-2.0
  */
 
-import type { Plugin } from "@opencode-ai/plugin";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
-import { addSignatureToGhCommand } from "./gh";
-import { addSignatureToGitCommitCommand } from "./git-commit";
-import { formatModelName } from "./models";
-import { generateSignature, hasSignature } from "./signature";
+import type { Plugin, PluginOptions } from "@opencode-ai/plugin";
+
+import { createModelRegistry, type FetchCatalogue } from "./app/model-registry";
+import { addSignatureToGhCommand } from "./domain/gh";
+import { addSignatureToGitCommitCommand } from "./domain/git-commit";
+import { generateSignature, hasSignature } from "./domain/signature";
+import { createFetchCatalogue } from "./infra/model-catalogue";
+import { createModelCacheStore } from "./infra/model-cache";
 
 /**
  * Adds the signature to one kind of command, or returns it untouched.
@@ -22,13 +27,36 @@ type CommandRewriter = (command: string, signature: string) => string;
 
 const BASH_REWRITERS: readonly CommandRewriter[] = [addSignatureToGitCommitCommand, addSignatureToGhCommand];
 
+/** Where the catalogue cache lives; overridable for tests and unusual setups. */
+function resolveCachePath(options: PluginOptions): string {
+  const override = options.cachePath;
+  if (typeof override === "string" && override !== "") return override;
+  const configRoot = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
+  return join(configRoot, "opencode", "cache", "opencode-pr-signature", "models.jsonl");
+}
+
+/** The catalogue fetch, injectable so tests never touch the network. */
+function resolveFetchCatalogue(options: PluginOptions): FetchCatalogue {
+  const override = options.fetchCatalogue;
+  if (typeof override === "function") return override as FetchCatalogue;
+  return createFetchCatalogue();
+}
+
 /**
  * PR Auto-Signature Plugin
  *
  * Automatically appends AI model signature to PR and Issue bodies,
  * as well as git commit messages.
  */
-export const PRSignaturePlugin: Plugin = async () => {
+export const PRSignaturePlugin: Plugin = async (_input, options) => {
+  const registry = createModelRegistry({
+    store: createModelCacheStore(resolveCachePath(options ?? {})),
+    fetchCatalogue: resolveFetchCatalogue(options ?? {}),
+  });
+  // A local, size-capped read — bounded by construction, and the only way
+  // the first message of a fresh session resolves against real data.
+  registry.seedFromCache();
+
   // Store current model name
   let currentModel = "Unknown Model";
 
@@ -47,13 +75,14 @@ export const PRSignaturePlugin: Plugin = async () => {
   return {
     /**
      * Hook: chat.message
-     * Track the current model from chat messages.
+     * Track the current model from chat messages, and refresh the catalogue
+     * in the background when the cache has gone stale. The refresh is
+     * fire-and-forget: the registry never rejects, and the hook never waits.
      * Note: model is passed in input, not output.message
      */
     "chat.message": async (input, _output) => {
-      if (input.model) {
-        currentModel = formatModelName(input.model);
-      }
+      currentModel = registry.get(input.model);
+      void registry.ensureFresh();
     },
 
     /**
