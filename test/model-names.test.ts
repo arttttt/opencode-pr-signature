@@ -46,7 +46,7 @@ describe("parseCatalogueResponse", () => {
     const catalogue = parseOf(REAL_SLICE);
     expect(catalogue).not.toBeNull();
     expect(catalogue!.models).toEqual([
-      { id: "anthropic/claude-opus-4.5", name: "Claude Opus 4.5 (batch)" }, // orphan :batch keeps its variant tag
+      { id: "anthropic/claude-opus-4.5", name: "Claude Opus 4.5" }, // orphan :batch, "(batch)" stripped like "(free)"
       { id: "deepseek/deepseek-v4-flash-vision-exp", name: "DeepSeek V4 Flash Vision Exp" },
       { id: "dots-studio/dots-3-note-preview", name: "Dots3-Note Preview" }, // orphan :free, "(free)" stripped
       { id: "z-ai/glm-5.2", name: "GLM 5.2" }, // base beats its :free variant
@@ -76,6 +76,19 @@ describe("parseCatalogueResponse", () => {
   test("thinking suffix strips like free and batch", () => {
     const models = [{ id: "qwen/qwen-plus:thinking", name: "Qwen: Qwen Plus", pricing: {}, architecture: { output_modalities: ["text"] } }];
     expect(parseOf(models)!.models).toEqual([{ id: "qwen/qwen-plus", name: "Qwen Plus" }]);
+  });
+
+  test("orphan variant tags: (free) and (batch) both strip, real tags stay", () => {
+    const models = [
+      { id: "acme/fast:batch", name: "Acme: Fast (batch)", pricing: {}, architecture: { output_modalities: ["text"] } },
+      { id: "anthropic/claude-opus-4.8-fast", name: "Anthropic: Claude Opus 4.8 (Fast)", pricing: {}, architecture: { output_modalities: ["text"] } },
+    ];
+    // "(batch)" is a pricing-variant artifact of the id suffix — stripped;
+    // "(Fast)" is a model property spelled in the display name — kept.
+    expect(parseOf(models)!.models).toEqual([
+      { id: "anthropic/claude-opus-4.8-fast", name: "Claude Opus 4.8 (Fast)" },
+      { id: "acme/fast", name: "Fast" },
+    ]);
   });
 
   test("routers: the openrouter org drops even when prompt is 0", () => {

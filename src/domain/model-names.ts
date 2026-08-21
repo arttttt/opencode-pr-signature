@@ -255,7 +255,7 @@ export function parseCatalogueResponse(body: unknown): ModelCatalogue | null {
 
     // S6: the name we would sign.
     let name = typeof item.name === "string" ? item.name.replace(/^[^:]{1,40}:\s*/, "") : "";
-    if (fromSuffix) name = name.replace(/\s\(free\)$/, "");
+    if (fromSuffix) name = name.replace(/\s\((free|batch)\)$/, "");
     name = sanitizeName(name);
     if (name === "") name = deriveDisplayName(id);
 
