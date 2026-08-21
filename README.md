@@ -9,6 +9,7 @@ Automatically adds AI model signature to Pull Requests, Issues, and Commits crea
 ## Features
 
 - 🤖 **Automatic Detection** - Dynamically detects the AI model being used (Kimi, Claude, GPT, Gemini, etc.)
+- 🔄 **Self-Updating Model Names** - names come from OpenRouter's live model catalogue, refreshed in the background at most once a day - no hardcoded list to go stale
 - 📝 **Smart Signature** - Appends signature only to content that doesn't already have it
 - 🔄 **Update Support** - Works with both creation and update operations
 - 🎯 **Multiple Tools** - Supports GitHub MCP tools, MCP Docker tools, git CLI, and gh CLI
@@ -104,27 +105,27 @@ The body is signed whether it is written out — `--body x`, `--body=x`, `-b x`,
 `--body "$(cat msg.md)"`. A body read from a file with `--body-file` is not
 signed; see below.
 
-### Supported Models
+### Model Names
 
-The plugin recognizes and formats the following model families:
+Model names are not hardcoded. The plugin fetches [OpenRouter's public model
+catalogue](https://openrouter.ai/api/v1/models) and uses it to render
+human-readable names — `Kimi K2.5`, `GLM 5.3`, `Grok 4.6`, and so on:
 
-- **Kimi** (Kimi, K2.5, Moonshot)
-- **Claude** (Claude 3/3.5/4/4.5 - Opus, Sonnet, Haiku)
-- **GPT** (GPT-4, GPT-4o, GPT-4.5, GPT-5, o1, o3, o4)
-- **Gemini** (Gemini 1.5/2.0/2.5/3 - Pro, Flash, Ultra)
-- **DeepSeek** (DeepSeek V3, R1, Coder)
-- **Llama** (Llama 3/3.1/3.2/3.3/4)
-- **Mistral** (Mistral Large/Medium/Small, Codestral, Pixtral)
-- **Qwen** (Qwen 2/2.5, Turbo, Plus, Max, QwQ)
-- **Grok** (Grok 2, 3)
-- **Cohere** (Command R, R+, A)
-- **Others** (Yi, Perplexity Sonar, and more)
-
-Other models will be displayed with their raw ID formatted nicely.
+- the catalogue is cached on disk and refreshed in the background when the
+  cache is older than 24 hours — never delaying or breaking a signature;
+- cache location: `~/.config/opencode/cache/opencode-pr-signature/models.jsonl`
+  (or `$XDG_CONFIG_HOME/opencode/...` when set);
+- offline, on first run, or with an unreadable cache, names fall back to a
+  nicely formatted version of the raw model ID;
+- models OpenRouter does not carry (direct-vendor APIs, local runtimes) always
+  use that fallback.
 
 ## How It Works
 
-1. **Model Detection**: The plugin listens to chat messages to detect which AI model is currently in use
+1. **Model Detection**: The plugin listens to chat messages to detect which AI
+   model is currently in use. The display name comes from a locally cached
+   copy of OpenRouter's model catalogue, refreshed in the background when the
+   cache is older than 24 hours (see [Model Names](#model-names))
 2. **Tool Interception**: Using the `tool.execute.before` hook, it intercepts:
    - GitHub MCP tool calls (PR/Issue creation and updates)
    - Bash commands (`git commit`, `gh pr create`, etc.)
@@ -198,7 +199,26 @@ Not signed:
 
 ## Configuration
 
-No configuration required! The plugin works out of the box.
+Works out of the box. Two things are worth knowing:
+
+**Network.** At most once a day, the plugin makes one background `GET` request
+to `openrouter.ai/api/v1/models` — no API key, no account, nothing else is
+sent — to refresh its model-name cache. Offline, it silently keeps the last
+cache, or the formatted-ID fallback when there is none.
+
+**Options.** Via the tuple form of the plugin config:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    ["opencode-pr-signature", { "cachePath": "/custom/path/models.jsonl" }]
+  ]
+}
+```
+
+- `cachePath` — where the model cache is stored (default:
+  `~/.config/opencode/cache/opencode-pr-signature/models.jsonl`)
 
 ## Development
 
@@ -215,6 +235,8 @@ bun test
 
 The tests execute the rewritten commands for real, in throwaway git
 repositories, through `/bin/sh` — they need `git` and a POSIX shell on PATH.
+The suite is fully offline: network access is always injected or fixtured,
+never real.
 
 ## License
 
