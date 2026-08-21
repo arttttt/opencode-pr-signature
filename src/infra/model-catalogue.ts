@@ -21,7 +21,14 @@ export type FetchImpl = (input: string, init: RequestInit) => Promise<Response>;
 
 /** Read the body in chunks with a hard cap — never buffer unbounded first. */
 async function readCapped(res: Response): Promise<string> {
-  if (res.body === null) return res.text();
+  if (res.body === null) {
+    // Degenerate path: no stream to cap mid-flight, so check after the fact.
+    const text = await res.text();
+    if (text.length > MAX_RESPONSE_BYTES) {
+      throw new Error(`catalogue response exceeds ${MAX_RESPONSE_BYTES} bytes`);
+    }
+    return text;
+  }
   const decoder = new TextDecoder();
   let total = 0;
   let text = "";

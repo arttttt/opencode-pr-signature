@@ -18,7 +18,8 @@ export interface ModelCatalogue {
 
 /** The cache text's first line: a version gate and the age clock. */
 const CACHE_VERSION = 1;
-const MAX_CACHE_LINE_BYTES = 4096;
+/** A cache line longer than this (UTF-16 code units) is not one of ours. */
+const MAX_CACHE_LINE_CHARS = 4096;
 const MAX_NAME_LENGTH = 80;
 
 /**
@@ -255,7 +256,7 @@ export function parseCatalogueResponse(body: unknown): ModelCatalogue | null {
 
     // S6: the name we would sign.
     let name = typeof item.name === "string" ? item.name.replace(/^[^:]{1,40}:\s*/, "") : "";
-    if (fromSuffix) name = name.replace(/\s\((free|batch)\)$/, "");
+    if (fromSuffix) name = name.replace(/\s\((free|batch|thinking)\)$/, "");
     name = sanitizeName(name);
     if (name === "") name = deriveDisplayName(id);
 
@@ -313,7 +314,7 @@ export function parseCache(text: string): { fetchedAt: number; models: RawModelE
   const models: RawModelEntry[] = [];
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i];
-    if (line.length === 0 || line.length > MAX_CACHE_LINE_BYTES) continue;
+    if (line.length === 0 || line.length > MAX_CACHE_LINE_CHARS) continue;
     let parsed: unknown;
     try {
       parsed = JSON.parse(line);
@@ -324,7 +325,11 @@ export function parseCache(text: string): { fetchedAt: number; models: RawModelE
     const entry = parsed as { id?: unknown; name?: unknown };
     if (typeof entry.id !== "string" || entry.id.length === 0) continue;
     if (typeof entry.name !== "string") continue;
-    models.push({ id: entry.id, name: entry.name });
+    // The cache is data we signed once and read back — it goes through the
+    // same defense as the pipeline output: sanitize, and when nothing
+    // usable remains, derive from the id. Never trust a stored name.
+    const name = sanitizeName(entry.name);
+    models.push({ id: entry.id, name: name === "" ? deriveDisplayName(entry.id) : name });
   }
 
   if (models.length === 0) return null;

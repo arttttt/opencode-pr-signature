@@ -78,15 +78,17 @@ describe("parseCatalogueResponse", () => {
     expect(parseOf(models)!.models).toEqual([{ id: "qwen/qwen-plus", name: "Qwen Plus" }]);
   });
 
-  test("orphan variant tags: (free) and (batch) both strip, real tags stay", () => {
+  test("orphan variant tags: free, batch and thinking all strip, real tags stay", () => {
     const models = [
       { id: "acme/fast:batch", name: "Acme: Fast (batch)", pricing: {}, architecture: { output_modalities: ["text"] } },
+      { id: "acme/deep:thinking", name: "Acme: Deep (thinking)", pricing: {}, architecture: { output_modalities: ["text"] } },
       { id: "anthropic/claude-opus-4.8-fast", name: "Anthropic: Claude Opus 4.8 (Fast)", pricing: {}, architecture: { output_modalities: ["text"] } },
     ];
-    // "(batch)" is a pricing-variant artifact of the id suffix — stripped;
-    // "(Fast)" is a model property spelled in the display name — kept.
+    // "(batch)"/"(thinking)" are pricing-variant artifacts of the id suffix —
+    // stripped; "(Fast)" is a model property spelled in the display name — kept.
     expect(parseOf(models)!.models).toEqual([
       { id: "anthropic/claude-opus-4.8-fast", name: "Claude Opus 4.8 (Fast)" },
+      { id: "acme/deep", name: "Deep" },
       { id: "acme/fast", name: "Fast" },
     ]);
   });
@@ -302,5 +304,17 @@ describe("cache", () => {
   test("zero valid entries yields null", () => {
     expect(parseCache('{"v":1,"fetchedAt":5}\n')).toBeNull();
     expect(parseCache('{"v":1,"fetchedAt":5}\ngarbage')).toBeNull();
+  });
+
+  test("names are sanitized at load: a JSON-escaped newline never survives", () => {
+    const text = '{"v":1,"fetchedAt":5}\n{"id":"acme/nl","name":"a\\nb\\tc"}';
+    const parsed = parseCache(text)!;
+    expect(parsed.models).toEqual([{ id: "acme/nl", name: "a b c" }]);
+    expect(parsed.models[0].name.includes("\n")).toBe(false);
+  });
+
+  test("a name that sanitizes to empty derives from the id, mirroring the pipeline", () => {
+    const text = '{"v":1,"fetchedAt":5}\n{"id":"acme/blank-slate","name":" \\t "}';
+    expect(parseCache(text)!.models).toEqual([{ id: "acme/blank-slate", name: "Blank Slate" }]);
   });
 });

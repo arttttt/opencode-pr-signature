@@ -71,6 +71,18 @@ describe("createFetchCatalogue", () => {
     await expect(fetchCatalogue(new AbortController().signal)).rejects.toThrow(/16 MB|bytes/);
   });
 
+  test("a streamless (null-body) response past the cap still rejects", async () => {
+    // Some runtimes hand back body===null; the after-the-fact check keeps
+    // the 16 MB guarantee hole-free on that degenerate path.
+    const oversize = "a".repeat(16 * 1024 * 1024 + 1);
+    const fetchCatalogue = createFetchCatalogue(async () => {
+      const res = responding(JSON.stringify({ data: [{ id: oversize }] }));
+      Object.defineProperty(res, "body", { value: null });
+      return res;
+    });
+    await expect(fetchCatalogue(new AbortController().signal)).rejects.toThrow(/16 MB|bytes/);
+  });
+
   test("a chunked body inside the cap reassembles correctly", async () => {
     const fetchCatalogue = createFetchCatalogue(async () =>
       chunkedResponse(['{"data":[', '{"id":"z-ai/glm-5.3"}', "]}"]),
