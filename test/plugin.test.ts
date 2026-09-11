@@ -710,6 +710,38 @@ describe("gh commands", () => {
 
     expect(await sign(command)).toBe(command);
   });
+
+  // The repository selector is what an agent working outside the checkout
+  // reaches for, and it sits between gh and its subcommand.
+  test.each([
+    ["gh -R owner/repo pr create --title t --body hello", "-R value"],
+    ["gh --repo owner/repo issue create --title t --body hello", "--repo value"],
+    ["gh --repo=owner/repo pr comment 1 --body hello", "--repo=value"],
+  ])("appends to the body behind %p", async (command) => {
+    const rewritten = await sign(command);
+
+    expect(rewritten).toContain(`--body 'hello\n\n${signature}'`);
+  });
+
+  test("adds a body behind the repository selector when the command has none", async () => {
+    const { body } = await runGh(await sign("gh -R owner/repo pr create --title t"));
+
+    expect(body).toBe(signature);
+  });
+
+  test("keeps the selector in the command it rewrites", async () => {
+    const rewritten = await sign("gh -R owner/repo pr create --title t --body hello");
+
+    expect(rewritten).toStartWith("gh -R owner/repo pr create ");
+  });
+
+  test.each([
+    ["a subcommand that carries no body", "gh -R owner/repo pr list"],
+    ["a subject that is not pr or issue", "gh -R owner/repo repo view"],
+    ["a command that is only an argument", "echo gh -R owner/repo pr create --body hello"],
+  ])("returns the command unchanged for %s", async (_name, command) => {
+    expect(await sign(command)).toBe(command);
+  });
 });
 
 describe("one line carrying both a commit and a pull request", () => {

@@ -285,22 +285,6 @@ export function findCommandStarts(command: string): Map<number, number> {
 }
 
 /**
- * Find the first occurrence of a command that is actually being run, skipping
- * matches that sit inside another command's arguments.
- */
-export function findCommandMatch(command: string, pattern: RegExp): RegExpExecArray | undefined {
-  const starts = findCommandStarts(command);
-  const regex = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : pattern.flags + "g");
-
-  let match: RegExpExecArray | null;
-  while ((match = regex.exec(command)) !== null) {
-    if (starts.has(match.index)) return match;
-  }
-
-  return undefined;
-}
-
-/**
  * Whether an option takes the word after it as its value, rather than
  * standing on its own or carrying its value attached with `=`.
  */
