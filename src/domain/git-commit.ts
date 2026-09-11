@@ -6,7 +6,7 @@ import { hasSignature } from "./signature";
 import { fileReader, signedMessageGroup } from "./signed-message";
 import {
   findCommandEndIndex,
-  findCommandMatch,
+  findInvocation,
   attachedValue,
   findCommandStarts,
   findHeredocBody,
@@ -16,9 +16,34 @@ import {
   maskHeredocBodies,
   quoteShellArgument,
   readHeredocHeader,
+  readLeadingOptions,
   readShellWord,
+  type Invocation,
   type ShellWord,
 } from "./shell";
+
+/**
+ * The options git takes before a subcommand that read the next word as their
+ * value. `--exec-path` is deliberately absent: spelled without `=` it prints
+ * the path and exits rather than taking the word after it.
+ */
+const GIT_VALUE_OPTIONS = new Set([
+  "-C",
+  "-c",
+  "--git-dir",
+  "--work-tree",
+  "--namespace",
+  "--attr-source",
+  "--config-env",
+]);
+
+const gitTakesSeparatedValue = (option: string) => GIT_VALUE_OPTIONS.has(option);
+
+/** Accept `git commit`, and nothing that merely starts with it. */
+function readCommitSubcommand(command: string, index: number): number | undefined {
+  const word = readShellWord(command, index);
+  return word && word.value.toLowerCase() === "commit" ? word.end : undefined;
+}
 
 /**
  * Where a git commit takes its message from.
@@ -164,6 +189,40 @@ function addSignatureToHeredoc(command: string, signature: string, afterOption: 
 type SegmentEdit = { start: number; end: number; text: string };
 
 /**
+ * Build a reader that stands where git stands.
+ *
+ * git applies its own options before it does anything: `--git-dir` points it
+ * at another repository, `-C` moves it into another directory. A reader that
+ * drops them reads the wrong repository's HEAD and hands the message straight
+ * to a commit in the right one, which is a wrong message committed silently.
+ */
+function headReader(options: string): string {
+  return `git${options ? ` ${options}` : ""} log -1 --format=%B HEAD`;
+}
+
+/**
+ * Build a reader for a message file, from the directory git will read it in.
+ *
+ * Only `-C` moves git: `--git-dir` and `--work-tree` send it to another
+ * repository while leaving the working directory alone, so a relative path
+ * still resolves against the real one. Several `-C` chain, each relative to
+ * the one before, which is what repeating the `cd` reproduces. The stage is
+ * already a subshell, so none of this reaches the commit itself.
+ */
+function pathReader(directories: string[], pathToken: string): string {
+  return [...directories.map((directory) => `cd -- ${directory}`), fileReader(pathToken)].join(" && ");
+}
+
+/** The `-C` paths this invocation carries, in the order git applies them. */
+function workingDirectories(command: string, invocation: Invocation): string[] {
+  const directories: string[] = [];
+  for (const { option, value } of readLeadingOptions(command, invocation.optionsStart, gitTakesSeparatedValue)) {
+    if (option.value === "-C" && value) directories.push(value.raw);
+  }
+  return directories;
+}
+
+/**
  * Everything needed to put a signing stage in front of one git commit: what
  * reads the message, how the command changes to take it on standard input,
  * and what feeds the stage itself.
@@ -191,11 +250,12 @@ type SigningStage = {
 function planSigningStage(
   scan: string,
   command: string,
-  gitCommitStart: number,
+  invocation: Invocation,
   endIndex: number,
-  afterGitCommit: number,
   source: CommitMessageSource,
 ): SigningStage | undefined {
+  const gitCommitStart = invocation.start;
+  const afterGitCommit = invocation.end - invocation.start;
   const insertionPoint = findCommandStarts(scan).get(gitCommitStart) ?? gitCommitStart;
   const piped = hasPrecedingPipe(scan, insertionPoint);
   const redirect = findStdinRedirect(scan.slice(gitCommitStart, endIndex));
@@ -205,12 +265,12 @@ function planSigningStage(
     if (piped || redirect.kind !== "none") return undefined;
     return source.kind === "path"
       ? {
-          reader: fileReader(source.token),
+          reader: pathReader(workingDirectories(command, invocation), source.token),
           edits: [{ start: source.start, end: source.end, text: "-F -" }],
           insertionPoint,
         }
       : {
-          reader: "git log -1 --format=%B HEAD",
+          reader: headReader(command.slice(invocation.optionsStart, invocation.optionsEnd).trim()),
           // Insert next to the subcommand, ahead of any `--`, past which git
           // reads every word as a pathspec rather than an option.
           edits: [{ start: afterGitCommit, end: afterGitCommit, text: " -F -" }],
@@ -285,13 +345,15 @@ export function addSignatureToGitCommitCommand(command: string, signature: strin
   // Scan the masked copy so message text is never read as shell syntax, and
   // slice the original so the message is never altered by scanning.
   const scan = maskHeredocBodies(command);
-  const gitCommitMatch = findCommandMatch(scan, /git\s+commit\b/i);
-  if (!gitCommitMatch || gitCommitMatch.index === undefined) return command;
+  const invocation = findInvocation(scan, "git", gitTakesSeparatedValue, readCommitSubcommand);
+  if (!invocation) return command;
 
-  const gitCommitStart = gitCommitMatch.index;
+  const gitCommitStart = invocation.start;
   const endIndex = findCommandEndIndex(scan, gitCommitStart);
   const commandPart = command.slice(gitCommitStart, endIndex);
-  const source = findCommitMessageSource(scan.slice(gitCommitStart, endIndex), gitCommitMatch[0].length);
+  // Past the subcommand: git's own options are not the commit's, and `-C`
+  // means a different thing on each side of it.
+  const source = findCommitMessageSource(scan.slice(gitCommitStart, endIndex), invocation.end - gitCommitStart);
   if (!source) return command;
 
   if (source.kind === "message") {
@@ -309,7 +371,7 @@ export function addSignatureToGitCommitCommand(command: string, signature: strin
     if (heredocCommand) return heredocCommand;
   }
 
-  const stage = planSigningStage(scan, command, gitCommitStart, endIndex, gitCommitMatch[0].length, source);
+  const stage = planSigningStage(scan, command, invocation, endIndex, source);
   if (!stage) return command;
 
   return applySigningStage(command, gitCommitStart, endIndex, stage, signature);

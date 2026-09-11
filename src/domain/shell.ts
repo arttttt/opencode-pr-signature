@@ -307,8 +307,9 @@ export function findCommandMatch(command: string, pattern: RegExp): RegExpExecAr
 export type TakesSeparatedValue = (option: string) => boolean;
 
 /**
- * Read the options a program takes before its subcommand and return where the
- * first word that is not one of them begins.
+ * Walk the options a program takes before its subcommand, yielding each one
+ * with the word it consumed as its value, and stopping at the first word that
+ * is not an option.
  *
  * Which options swallow the word after them cannot be read off their spelling
  * — `--no-pager` takes nothing, `-C` takes a path — so the caller names the
@@ -320,21 +321,45 @@ export type TakesSeparatedValue = (option: string) => boolean;
  * value sitting where the subcommand should be, and the caller finds no
  * subcommand and leaves the command alone.
  */
-export function skipLeadingOptions(command: string, index: number, takesSeparatedValue: TakesSeparatedValue): number {
+export function* readLeadingOptions(
+  command: string,
+  index: number,
+  takesSeparatedValue: TakesSeparatedValue,
+): Generator<LeadingOption> {
   let cursor = index;
 
   while (true) {
-    const word = readShellWord(command, cursor);
+    const option = readShellWord(command, cursor);
     // `--` ends the options, and a subcommand never sits behind it.
-    if (!word || word.value === "-" || word.value === "--" || !word.value.startsWith("-")) return cursor;
-    cursor = word.end;
+    if (!option || option.value === "-" || option.value === "--" || !option.value.startsWith("-")) return;
+    cursor = option.end;
 
-    if (takesSeparatedValue(word.value)) {
-      const value = readShellWord(command, cursor);
-      if (!value) return cursor;
-      cursor = value.end;
+    if (!takesSeparatedValue(option.value)) {
+      yield { option };
+      continue;
     }
+
+    const value = readShellWord(command, cursor);
+    // The value never arrives: stop here rather than read past the options.
+    if (!value) {
+      yield { option };
+      return;
+    }
+    cursor = value.end;
+    yield { option, value };
   }
+}
+
+/** An option read before a subcommand, with the word it took as its value. */
+export type LeadingOption = { option: ShellWord; value?: ShellWord };
+
+/** Where the options a program takes before its subcommand end. */
+export function skipLeadingOptions(command: string, index: number, takesSeparatedValue: TakesSeparatedValue): number {
+  let cursor = index;
+  for (const { option, value } of readLeadingOptions(command, index, takesSeparatedValue)) {
+    cursor = (value ?? option).end;
+  }
+  return cursor;
 }
 
 /** The parts of an invocation a caller has to slice between. */
