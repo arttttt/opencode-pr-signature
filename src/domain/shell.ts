@@ -285,16 +285,109 @@ export function findCommandStarts(command: string): Map<number, number> {
 }
 
 /**
- * Find the first occurrence of a command that is actually being run, skipping
- * matches that sit inside another command's arguments.
+ * Whether an option takes the word after it as its value, rather than
+ * standing on its own or carrying its value attached with `=`.
  */
-export function findCommandMatch(command: string, pattern: RegExp): RegExpExecArray | undefined {
-  const starts = findCommandStarts(command);
-  const regex = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : pattern.flags + "g");
+export type TakesSeparatedValue = (option: string) => boolean;
 
-  let match: RegExpExecArray | null;
-  while ((match = regex.exec(command)) !== null) {
-    if (starts.has(match.index)) return match;
+/**
+ * Walk the options a program takes before its subcommand, yielding each one
+ * with the word it consumed as its value, and stopping at the first word that
+ * is not an option.
+ *
+ * Which options swallow the word after them cannot be read off their spelling
+ * — `--no-pager` takes nothing, `-C` takes a path — so the caller names the
+ * ones that do. Guessing by shape instead reads the subcommand of
+ * `git --no-pager log commit` as `commit`.
+ *
+ * An option this does not recognize is assumed to stand alone. That is the
+ * safe half of the guess: an unknown option that did take a value leaves its
+ * value sitting where the subcommand should be, and the caller finds no
+ * subcommand and leaves the command alone.
+ */
+export function* readLeadingOptions(
+  command: string,
+  index: number,
+  takesSeparatedValue: TakesSeparatedValue,
+): Generator<LeadingOption> {
+  let cursor = index;
+
+  while (true) {
+    const option = readShellWord(command, cursor);
+    // `--` ends the options, and a subcommand never sits behind it.
+    if (!option || option.value === "-" || option.value === "--" || !option.value.startsWith("-")) return;
+    cursor = option.end;
+
+    if (!takesSeparatedValue(option.value)) {
+      yield { option };
+      continue;
+    }
+
+    const value = readShellWord(command, cursor);
+    // The value never arrives: stop here rather than read past the options.
+    if (!value) {
+      yield { option };
+      return;
+    }
+    cursor = value.end;
+    yield { option, value };
+  }
+}
+
+/** An option read before a subcommand, with the word it took as its value. */
+export type LeadingOption = { option: ShellWord; value?: ShellWord };
+
+/** Where the options a program takes before its subcommand end. */
+export function skipLeadingOptions(command: string, index: number, takesSeparatedValue: TakesSeparatedValue): number {
+  let cursor = index;
+  for (const { option, value } of readLeadingOptions(command, index, takesSeparatedValue)) {
+    cursor = (value ?? option).end;
+  }
+  return cursor;
+}
+
+/** The parts of an invocation a caller has to slice between. */
+export type Invocation = {
+  /** Where the program name begins. */
+  start: number;
+  /** Where the program's own options begin, just past its name. */
+  optionsStart: number;
+  /** Where those options end; whitespace and the subcommand follow. */
+  optionsEnd: number;
+  /** Where the subcommand ends; the subcommand's own arguments follow. */
+  end: number;
+};
+
+/**
+ * Find the first invocation of a program that is actually being run, skipping
+ * the occurrences that sit inside another command's arguments.
+ *
+ * The subcommand is looked for past the program's own options rather than
+ * immediately after its name, so `git -C path commit` and `git commit` are
+ * recognized alike. `readSubcommand` reports where the subcommand it accepts
+ * ends, or undefined when this invocation is not the one being looked for.
+ *
+ * The program name is compared as a whole word, so `github` is not `git`; a
+ * name spelled as a path is not a command start and is passed over, exactly
+ * as it was before the options were allowed in.
+ */
+export function findInvocation(
+  command: string,
+  program: string,
+  takesSeparatedValue: TakesSeparatedValue,
+  readSubcommand: (command: string, index: number) => number | undefined,
+): Invocation | undefined {
+  // Command substitution nests its own starts in ahead of the outer command,
+  // so insertion order is not source order; the first invocation is.
+  const starts = [...findCommandStarts(command).keys()].sort((a, b) => a - b);
+
+  for (const start of starts) {
+    const word = readShellWord(command, start);
+    if (!word || word.value.toLowerCase() !== program) continue;
+
+    const optionsEnd = skipLeadingOptions(command, word.end, takesSeparatedValue);
+    const end = readSubcommand(command, optionsEnd);
+    if (end !== undefined) return { start, optionsStart: word.end, optionsEnd, end };
   }
 
   return undefined;

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { PRSignaturePlugin } from "../src/plugin";
 
 const signature = "🤖 Generated with [OpenCode](https://opencode.ai) (Claude Opus 4)";
@@ -458,6 +458,123 @@ describe("git commit --amend --no-edit", () => {
   });
 });
 
+describe("git's own options before the subcommand", () => {
+  /**
+   * A second repository next to the one the shell sits in, so every test here
+   * can tell "git did the right thing" apart from "git did it to the wrong
+   * repository" — the failure the readers used to produce in silence.
+   */
+  function repositoryElsewhere(subject?: string): string {
+    const directory = createRepository();
+    if (subject !== undefined) {
+      run(directory, `git commit -q -m ${JSON.stringify(subject)}`);
+      writeFileSync(join(directory, "tracked.txt"), "changed\n");
+      run(directory, "git add tracked.txt");
+    }
+    return directory;
+  }
+
+  test("signs a commit made in another directory", async () => {
+    const here = createRepository();
+    const there = repositoryElsewhere();
+
+    run(here, await sign(`git -C ${there} commit -m "subject"`));
+
+    expect(commitMessage(there)).toBe(`subject\n\n${signature}\n\n`);
+  });
+
+  test.each([
+    ["a repository named without moving into it", (there: string) => `--git-dir=${join(there, ".git")} --work-tree=${there}`],
+    ["the same options spelled with separate words", (there: string) => `--git-dir ${join(there, ".git")} --work-tree ${there}`],
+    ["a configuration override", (there: string) => `-C ${there} -c core.abbrev=12`],
+    ["a flag that takes no value at all", (there: string) => `--no-pager -C ${there}`],
+  ])("signs a commit behind %s", async (_name, options) => {
+    const here = createRepository();
+    const there = repositoryElsewhere();
+
+    run(here, await sign(`git ${options(there)} commit -m "subject"`));
+
+    expect(commitMessage(there)).toBe(`subject\n\n${signature}\n\n`);
+  });
+
+  test("takes a quoted option value as one word", async () => {
+    const here = createRepository();
+    const there = join(here, "sub dir");
+    mkdirSync(there);
+    run(there, "git init -q && git config user.name Test && git config user.email test@example.com");
+    writeFileSync(join(there, "tracked.txt"), "content\n");
+    run(there, "git add tracked.txt");
+
+    run(here, await sign(`git -C "sub dir" commit -m "subject"`));
+
+    expect(commitMessage(there)).toBe(`subject\n\n${signature}\n\n`);
+  });
+
+  // The reader reads HEAD. Without the options it reads the HEAD of whichever
+  // repository the shell happens to stand in, and that message is then what
+  // gets committed over there.
+  test("amends with the message of the repository git was pointed at", async () => {
+    const here = createRepository();
+    run(here, 'git commit -q -m "message of the repository the shell sits in"');
+    const there = repositoryElsewhere("subject");
+
+    run(here, await sign(`git -C ${there} commit --amend --no-edit`));
+
+    expect(commitMessage(there)).toBe(`subject\n\n${signature}\n\n`);
+    expect(commitMessage(here)).toBe("message of the repository the shell sits in\n\n");
+  });
+
+  // Same trap, one step further: git resolves a relative -F path inside the
+  // directory it was moved into, so a decoy of the same name sits in the way.
+  test("reads a message file from the directory git was moved into", async () => {
+    const here = createRepository();
+    writeFileSync(join(here, "msg.txt"), "message from the wrong directory\n");
+    const there = repositoryElsewhere();
+    writeFileSync(join(there, "msg.txt"), "subject\n");
+
+    run(here, await sign(`git -C ${there} commit -F msg.txt`));
+
+    expect(commitMessage(there)).toBe(`subject\n\n${signature}\n\n`);
+  });
+
+  test("follows a chain of -C options, each relative to the one before", async () => {
+    const here = createRepository();
+    const there = repositoryElsewhere();
+    writeFileSync(join(there, "msg.txt"), "subject\n");
+
+    run(here, await sign(`git -C ${dirname(there)} -C ${basename(there)} commit -F msg.txt`));
+
+    expect(commitMessage(there)).toBe(`subject\n\n${signature}\n\n`);
+  });
+
+  // --git-dir and --work-tree point git at another repository without moving
+  // it, so a relative path still belongs to the shell's own directory.
+  test("reads a message file from the shell's directory when git was not moved", async () => {
+    const here = createRepository();
+    writeFileSync(join(here, "msg.txt"), "subject\n");
+    const there = repositoryElsewhere();
+    writeFileSync(join(there, "msg.txt"), "message from the wrong directory\n");
+
+    run(here, await sign(`git --git-dir=${join(there, ".git")} --work-tree=${there} commit -F msg.txt`));
+
+    expect(commitMessage(there)).toBe(`subject\n\n${signature}\n\n`);
+  });
+
+  test.each([
+    // `commit` is a ref here, and `log` is not the value of --no-pager.
+    ["a ref that happens to be named commit", "git --no-pager log commit"],
+    ["a subcommand that is not commit", "git -C /repo status"],
+    ["options that never reach a subcommand", "git -C /repo"],
+    ["a commit quoted inside another command", 'echo "git -C /repo commit -m x"'],
+    ["a commit that is only an argument", "echo git -C /repo commit -m x"],
+    // The -C before the subcommand is a directory; the one after it is a
+    // commit to reuse, which -F would strip the author and date from.
+    ["a reused message behind a directory option", "git -C /repo commit -C HEAD~1"],
+  ])("returns the command unchanged for %s", async (_name, command) => {
+    expect(await sign(command)).toBe(command);
+  });
+});
+
 describe("messages the plugin refuses to touch", () => {
   test.each([
     ["a message file mixed with -m", 'git commit -m "subject" -F message.txt'],
@@ -591,6 +708,38 @@ describe("gh commands", () => {
   test("does not sign twice", async () => {
     const command = `gh pr create --body "hello ${signature}"`;
 
+    expect(await sign(command)).toBe(command);
+  });
+
+  // The repository selector is what an agent working outside the checkout
+  // reaches for, and it sits between gh and its subcommand.
+  test.each([
+    ["gh -R owner/repo pr create --title t --body hello", "-R value"],
+    ["gh --repo owner/repo issue create --title t --body hello", "--repo value"],
+    ["gh --repo=owner/repo pr comment 1 --body hello", "--repo=value"],
+  ])("appends to the body behind %p", async (command) => {
+    const rewritten = await sign(command);
+
+    expect(rewritten).toContain(`--body 'hello\n\n${signature}'`);
+  });
+
+  test("adds a body behind the repository selector when the command has none", async () => {
+    const { body } = await runGh(await sign("gh -R owner/repo pr create --title t"));
+
+    expect(body).toBe(signature);
+  });
+
+  test("keeps the selector in the command it rewrites", async () => {
+    const rewritten = await sign("gh -R owner/repo pr create --title t --body hello");
+
+    expect(rewritten).toStartWith("gh -R owner/repo pr create ");
+  });
+
+  test.each([
+    ["a subcommand that carries no body", "gh -R owner/repo pr list"],
+    ["a subject that is not pr or issue", "gh -R owner/repo repo view"],
+    ["a command that is only an argument", "echo gh -R owner/repo pr create --body hello"],
+  ])("returns the command unchanged for %s", async (_name, command) => {
     expect(await sign(command)).toBe(command);
   });
 });

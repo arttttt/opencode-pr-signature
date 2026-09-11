@@ -7,14 +7,35 @@ import { signedValueSubstitution } from "./signed-message";
 import {
   attachedValue,
   findCommandEndIndex,
-  findCommandMatch,
+  findInvocation,
   maskHeredocBodies,
   quoteShellArgument,
   readShellWord,
 } from "./shell";
 
-/** gh commands that carry a body we can sign. */
-const GH_COMMAND_PATTERN = /gh\s+(pr|issue)\s+(create|comment|review)\b/i;
+/** What a gh command has to name, in order, to carry a body we can sign. */
+const GH_SUBJECTS = new Set(["pr", "issue"]);
+const GH_ACTIONS = new Set(["create", "comment", "review"]);
+
+/**
+ * The gh options that take the next word as their value. The repository
+ * selector is the one that turns up before the subcommand — an agent working
+ * outside the checkout names the repository rather than moving into it.
+ */
+const GH_VALUE_OPTIONS = new Set(["-R", "--repo"]);
+
+const ghTakesSeparatedValue = (option: string) => GH_VALUE_OPTIONS.has(option);
+
+/** Accept the two-word subcommands that carry a body: `pr create` and kin. */
+function readGhSubcommand(command: string, index: number): number | undefined {
+  const subject = readShellWord(command, index);
+  if (!subject || !GH_SUBJECTS.has(subject.value.toLowerCase())) return undefined;
+
+  const action = readShellWord(command, subject.end);
+  if (!action || !GH_ACTIONS.has(action.value.toLowerCase())) return undefined;
+
+  return action.end;
+}
 
 /**
  * What the gh command says about its body, as far as we can tell.
@@ -90,10 +111,10 @@ function findGhBodyOption(command: string): GhBodyOption {
  */
 export function addSignatureToGhCommand(command: string, signature: string): string {
   const scan = maskHeredocBodies(command);
-  const ghMatch = findCommandMatch(scan, GH_COMMAND_PATTERN);
-  if (!ghMatch || ghMatch.index === undefined) return command;
+  const invocation = findInvocation(scan, "gh", ghTakesSeparatedValue, readGhSubcommand);
+  if (!invocation) return command;
 
-  const startIndex = ghMatch.index;
+  const startIndex = invocation.start;
   const endIndex = findCommandEndIndex(scan, startIndex);
 
   const commandPart = command.slice(startIndex, endIndex);
