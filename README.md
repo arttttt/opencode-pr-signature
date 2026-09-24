@@ -29,6 +29,9 @@ Add to your OpenCode config (`~/.config/opencode/opencode.json` or project-level
 }
 ```
 
+On OpenCode 2 the config key is `plugins` instead of `plugin`; the same package
+loads through either.
+
 ### From a Local Checkout
 
 The plugin is several modules under `src/`, so it is installed as a package

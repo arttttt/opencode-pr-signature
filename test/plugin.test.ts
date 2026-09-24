@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { PRSignaturePlugin } from "../src/plugin";
+import plugin, { PRSignaturePlugin } from "../src/plugin";
 
 const signature = "🤖 Generated with [OpenCode](https://opencode.ai) (Claude Opus 4)";
 const directories: string[] = [];
@@ -792,5 +792,81 @@ describe("GitHub and MCP pull request tools", () => {
     const args = await signToolBody("github_update_issue", { body: `hello\n\n${signature}` });
 
     expect(args.body).toBe(`hello\n\n${signature}`);
+  });
+});
+
+/**
+ * OpenCode 2 drives the plugin through the `setup` entrypoint instead of the
+ * 1.x hook map. The context below captures the registered callbacks so the
+ * suite can fire them the way the 2.x runtime would.
+ */
+type V2Hook = (event: unknown) => void | Promise<void>;
+
+function mockV2Context(options: Record<string, unknown>) {
+  const sessionHooks = new Map<string, V2Hook>();
+  const toolHooks = new Map<string, V2Hook>();
+  const register = (hooks: Map<string, V2Hook>) => async (name: string, callback: V2Hook) => {
+    hooks.set(name, callback);
+    return { dispose: async () => {} };
+  };
+  const ctx = { options, session: { hook: register(sessionHooks) }, tool: { hook: register(toolHooks) } };
+  return {
+    ctx,
+    fireSession: (name: string, event: unknown) => sessionHooks.get(name)!(event),
+    fireTool: (name: string, event: unknown) => toolHooks.get(name)!(event),
+  };
+}
+
+describe("default export", () => {
+  test("exposes the dual OpenCode 1 / OpenCode 2 entrypoint", () => {
+    expect(plugin.id).toBe("opencode-pr-signature");
+    expect(typeof plugin.server).toBe("function");
+    expect(typeof plugin.setup).toBe("function");
+  });
+});
+
+describe("OpenCode 2 setup", () => {
+  async function v2(options: Record<string, unknown>) {
+    const cacheDir = mkdtempSync(join(tmpdir(), "opencode-pr-signature-v2-"));
+    directories.push(cacheDir);
+    const mock = mockV2Context({
+      cachePath: join(cacheDir, "models.jsonl"),
+      fetchCatalogue: () => new Promise(() => {}),
+      ...options,
+    });
+    await plugin.setup(mock.ctx as never);
+    await mock.fireSession("context", { model: { id: "claude-opus-4" } });
+    return mock;
+  }
+
+  test("no-ops on a context that is not V2-shaped", async () => {
+    await expect(plugin.setup({ options: {} } as never)).resolves.toBeUndefined();
+  });
+
+  test("signs a shell command", async () => {
+    const mock = await v2({});
+    const input = { command: 'git commit -m "subject"' };
+
+    await mock.fireTool("execute.before", { tool: "shell", input });
+
+    expect(input.command).toBe(`git commit -m "subject" -m '${signature}'`);
+  });
+
+  test("signs a GitHub PR body", async () => {
+    const mock = await v2({});
+    const input = { body: "hello" };
+
+    await mock.fireTool("execute.before", { tool: "github_create_pull_request", input });
+
+    expect(input.body).toBe(`hello\n\n${signature}`);
+  });
+
+  test("does not sign a shell command twice", async () => {
+    const mock = await v2({});
+    const input = { command: `git commit -m "subject" -m '${signature}'` };
+
+    await mock.fireTool("execute.before", { tool: "shell", input });
+
+    expect(input.command).toBe(`git commit -m "subject" -m '${signature}'`);
   });
 });
