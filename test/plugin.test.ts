@@ -843,6 +843,21 @@ describe("OpenCode 2 setup", () => {
     await expect(plugin.setup({ options: {} } as never)).resolves.toBeUndefined();
   });
 
+  test("registers hooks even when the V2 context omits options", async () => {
+    const toolHooks: string[] = [];
+    const sessionHooks: string[] = [];
+    const register = (names: string[]) => async (name: string) => {
+      names.push(name);
+      return { dispose: async () => {} };
+    };
+    const ctx = { tool: { hook: register(toolHooks) }, session: { hook: register(sessionHooks) } };
+
+    await plugin.setup(ctx as never);
+
+    expect(toolHooks).toContain("execute.before");
+    expect(sessionHooks).toContain("context");
+  });
+
   test("signs a shell command", async () => {
     const mock = await v2({});
     const input = { command: 'git commit -m "subject"' };

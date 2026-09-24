@@ -146,9 +146,13 @@ function signBody(target: { body?: string }, signature: string): void {
 async function setup(ctx: V2Context): Promise<void> {
   if (!isV2Context(ctx)) return;
 
+  // OpenCode 2 declares `options` as required and always supplies it, but a
+  // missing object must not sink setup: mirror the OpenCode 1 `options ?? {}`.
+  const options: Options = ctx.options ?? {};
+
   const registry = createModelRegistry({
-    store: createModelCacheStore(resolveCachePath(ctx.options)),
-    fetchCatalogue: resolveFetchCatalogue(ctx.options),
+    store: createModelCacheStore(resolveCachePath(options)),
+    fetchCatalogue: resolveFetchCatalogue(options),
   });
   registry.seedFromCache();
 
