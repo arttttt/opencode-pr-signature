@@ -49,6 +49,16 @@ export interface Signer {
   signBody(tool: string, body: unknown): string | undefined;
 }
 
+/** Plugin options as either OpenCode version hands them over: a plain record. */
+export type SignerOptions = Readonly<Record<string, unknown>>;
+
+/**
+ * Builds a Signer from the plugin's options. Host adapters depend on this,
+ * not on the registry, cache or network behind it: wiring those up is the
+ * composition root's job.
+ */
+export type SignerFactory = (options: SignerOptions) => Signer;
+
 export function createSigner(registry: ModelRegistry): Signer {
   let currentModel = "Unknown Model";
   const signature = () => generateSignature(currentModel);

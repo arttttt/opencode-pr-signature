@@ -3,7 +3,9 @@
  *   src/domain/  — pure logic; imports nothing outside domain, no packages.
  *   src/app/     — state/sequence; imports domain (and app).
  *   src/infra/   — adapters; imports domain+app and node:* builtins only.
- *   src/plugin.ts — composition root; may import everything.
+ *   src/hosts/   — OpenCode host adapters; imports domain+app, and the
+ *                  OpenCode plugin packages (for their types).
+ *   src/composition.ts, src/entry/ — composition root; may import everything.
  *
  * Every import shape counts as a dependency, including `import type` and
  * `export … from` re-exports (a re-export smuggles the target's layer with
@@ -19,18 +21,23 @@ import { dirname, join, normalize, relative, sep } from "node:path";
 
 const SRC_DIR = join(import.meta.dir, "..", "src");
 
-type Layer = "domain" | "app" | "infra" | "root-plugin";
+type Layer = "domain" | "app" | "infra" | "hosts" | "root-plugin";
 
 const ROOT_FILES: Record<string, Layer> = {
-  "plugin.ts": "root-plugin",
+  "composition.ts": "root-plugin",
 };
 
-const LAYER_DIRS = new Set(["domain", "app", "infra"]);
+const LAYER_DIRS: Record<string, Layer> = {
+  domain: "domain",
+  app: "app",
+  infra: "infra",
+  hosts: "hosts",
+  entry: "root-plugin",
+};
 
 function classify(relPath: string): Layer | null {
   if (ROOT_FILES[relPath]) return ROOT_FILES[relPath];
-  const top = relPath.split(sep)[0];
-  return LAYER_DIRS.has(top) ? (top as Layer) : null;
+  return LAYER_DIRS[relPath.split(sep)[0]] ?? null;
 }
 
 function walk(dir: string, out: string[] = []): string[] {
@@ -73,13 +80,18 @@ const ALLOWED_TARGETS: Record<Layer, Set<string>> = {
   domain: new Set(["domain"]),
   app: new Set(["domain", "app"]),
   infra: new Set(["domain", "app", "infra"]),
-  "root-plugin": new Set(["domain", "app", "infra", "root-plugin"]),
+  hosts: new Set(["domain", "app", "hosts"]),
+  "root-plugin": new Set(["domain", "app", "infra", "hosts", "root-plugin"]),
 };
+
+/** The OpenCode 1 and OpenCode 2 plugin/SDK package scopes. */
+const OPENCODE_PACKAGES = ["@opencode-ai/", "@opencode/"];
 
 const BARE_ALLOWED: Record<Layer, (spec: string) => boolean> = {
   domain: () => false,
   app: () => false,
   infra: (spec) => spec.startsWith("node:"),
+  hosts: (spec) => OPENCODE_PACKAGES.some((prefix) => spec.startsWith(prefix)),
   "root-plugin": () => true,
 };
 
@@ -106,7 +118,7 @@ describe("layer boundaries", () => {
           if (!targetLayer || !ALLOWED_TARGETS[layer].has(targetLayer)) {
             violations.push(`${file} (${layer}): relative import "${spec}" reaches ${targetLayer ?? "unclassified"} ${target}`);
           }
-          // Composition-root pin: only plugin.ts may reach into infra/.
+          // Composition-root pin: only the root may reach into infra/.
           if (targetLayer === "infra" && layer !== "root-plugin") {
             violations.push(`${file} (${layer}): only the composition root may import infra (got "${spec}")`);
           }
@@ -114,9 +126,9 @@ describe("layer boundaries", () => {
           if (!BARE_ALLOWED[layer](spec)) {
             violations.push(`${file} (${layer}): bare import "${spec}" is not allowed in this layer`);
           }
-          // SDK pin: only the composition root may touch the opencode SDK/plugin packages.
-          if (spec.startsWith("@opencode-ai/") && layer !== "root-plugin") {
-            violations.push(`${file} (${layer}): only the composition root may import "${spec}"`);
+          // SDK pin: only the host adapters and the root may touch the OpenCode packages.
+          if (OPENCODE_PACKAGES.some((prefix) => spec.startsWith(prefix)) && layer !== "hosts" && layer !== "root-plugin") {
+            violations.push(`${file} (${layer}): only a host adapter or the composition root may import "${spec}"`);
           }
         }
       }
