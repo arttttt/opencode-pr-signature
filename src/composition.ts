@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { createModelRegistry, type FetchCatalogue } from "./app/model-registry";
 import { createSigner, type Signer, type SignerOptions } from "./app/signer";
 import { createV1Plugin } from "./hosts/opencode-v1";
+import { createV2Setup } from "./hosts/opencode-v2";
 import { createFetchCatalogue } from "./infra/model-catalogue";
 import { createModelCacheStore } from "./infra/model-cache";
 
@@ -43,3 +44,4 @@ export function createSignerFromOptions(options: SignerOptions): Signer {
 }
 
 export const openCodeV1Plugin = createV1Plugin(createSignerFromOptions);
+export const openCodeV2Setup = createV2Setup(createSignerFromOptions);
