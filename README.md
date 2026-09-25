@@ -145,9 +145,10 @@ human-readable names — `Kimi K2.5`, `GLM 5.3`, `Grok 4.6`, and so on:
 ## How It Works
 
 1. **Model Detection**: The plugin listens to chat messages (OpenCode 1) or
-   the session context (OpenCode 2) to detect which AI model is currently in use. The display name comes from a locally cached
-   copy of OpenRouter's model catalogue, refreshed in the background when the
-   cache is older than 24 hours (see [Model Names](#model-names))
+   the session context (OpenCode 2) to detect which AI model is currently in
+   use. The display name comes from a locally cached copy of OpenRouter's
+   model catalogue, refreshed in the background when the cache is older than
+   24 hours (see [Model Names](#model-names))
 2. **Tool Interception**: Using the `tool.execute.before` hook, it intercepts:
    - GitHub MCP tool calls (PR/Issue creation and updates)
    - Shell commands (`git commit`, `gh pr create`, etc.) — the `bash` tool on
