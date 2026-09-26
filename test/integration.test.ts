@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { createModelRegistry } from "../src/app/model-registry";
 import { serializeCache } from "../src/domain/model-names";
 import { createModelCacheStore } from "../src/infra/model-cache";
-import { PRSignaturePlugin } from "../src/plugin";
+import { openCodeV1Plugin } from "../src/composition";
 
 const directories: string[] = [];
 
@@ -74,7 +74,7 @@ describe("integration", () => {
         resolveFetch = resolve;
       });
 
-    const plugin = await PRSignaturePlugin({} as never, { cachePath: path, fetchCatalogue });
+    const plugin = await openCodeV1Plugin({} as never, { cachePath: path, fetchCatalogue });
 
     // The hook completes even though the background fetch has not.
     await plugin["chat.message"]!({ model: { providerID: "zai", modelID: "glm-5.3" } } as never, {} as never);

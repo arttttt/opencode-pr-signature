@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { PRSignaturePlugin } from "../src/plugin";
+import { openCodeV1Plugin } from "../src/composition";
 
 const signature = "🤖 Generated with [OpenCode](https://opencode.ai) (Claude Opus 4)";
 const directories: string[] = [];
@@ -19,7 +19,7 @@ const directories: string[] = [];
 async function hooks() {
   const cacheDir = mkdtempSync(join(tmpdir(), "opencode-pr-signature-hooks-"));
   directories.push(cacheDir);
-  const plugin = await PRSignaturePlugin({} as never, {
+  const plugin = await openCodeV1Plugin({} as never, {
     cachePath: join(cacheDir, "models.jsonl"),
     fetchCatalogue: () => new Promise(() => {}),
   });

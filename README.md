@@ -29,6 +29,28 @@ Add to your OpenCode config (`~/.config/opencode/opencode.json` or project-level
 }
 ```
 
+On **OpenCode 2** the config key is `plugins`:
+
+```json
+{
+  "plugins": ["opencode-pr-signature"]
+}
+```
+
+### Compatibility
+
+One package serves both generations of OpenCode; each loads its own entry:
+
+| OpenCode | Entry it loads | What it calls |
+|---|---|---|
+| 1.0 – 1.3.3 | package root (`.`) | the plugin function, the module's only export |
+| 1.3.4 – 1.x | `./server` | `server` of `{ id, server, setup }` |
+| 2.x | `./server` | `setup` of `{ id, server, setup }` |
+
+The signing is shared; only the adapter differs. OpenCode 2 names its shell
+tool `shell` instead of `bash`, and reports the model through its session
+context instead of chat messages — the plugin handles both.
+
 ### From a Local Checkout
 
 The plugin is several modules under `src/`, so it is installed as a package
@@ -122,13 +144,15 @@ human-readable names — `Kimi K2.5`, `GLM 5.3`, `Grok 4.6`, and so on:
 
 ## How It Works
 
-1. **Model Detection**: The plugin listens to chat messages to detect which AI
-   model is currently in use. The display name comes from a locally cached
-   copy of OpenRouter's model catalogue, refreshed in the background when the
-   cache is older than 24 hours (see [Model Names](#model-names))
+1. **Model Detection**: The plugin listens to chat messages (OpenCode 1) or
+   the session context (OpenCode 2) to detect which AI model is currently in
+   use. The display name comes from a locally cached copy of OpenRouter's
+   model catalogue, refreshed in the background when the cache is older than
+   24 hours (see [Model Names](#model-names))
 2. **Tool Interception**: Using the `tool.execute.before` hook, it intercepts:
    - GitHub MCP tool calls (PR/Issue creation and updates)
-   - Bash commands (`git commit`, `gh pr create`, etc.)
+   - Shell commands (`git commit`, `gh pr create`, etc.) — the `bash` tool on
+     OpenCode 1, the `shell` tool on OpenCode 2
 3. **Signature Injection**: Before the tool executes, it appends the signature.
    Where the text is written in the command, it is edited directly:
    - For MCP tools: modifies the `body` argument
@@ -213,6 +237,16 @@ cache, or the formatted-ID fallback when there is none.
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
     ["opencode-pr-signature", { "cachePath": "/custom/path/models.jsonl" }]
+  ]
+}
+```
+
+On OpenCode 2 an entry takes its options as an object:
+
+```json
+{
+  "plugins": [
+    { "package": "opencode-pr-signature", "options": { "cachePath": "/custom/path/models.jsonl" } }
   ]
 }
 ```
