@@ -842,6 +842,28 @@ describe("backslashes, quotes and comments around a command", () => {
   });
 });
 
+describe("commands inside substitutions", () => {
+  const body = (text: string) => `'${text}\n\n${signature}'`;
+
+  test("signs a gh body inside backticks without eating the closing backtick", async () => {
+    const command = "echo `gh pr create --body hello`; echo after";
+
+    expect(await sign(command)).toBe(`echo \`gh pr create --body ${body("hello")}\`; echo after`);
+  });
+
+  test("signs a gh command inside a substitution within double quotes", async () => {
+    const command = 'echo "$(gh pr create --body hello)"; echo after';
+
+    expect(await sign(command)).toBe(`echo "$(gh pr create --body ${body("hello")})"; echo after`);
+  });
+
+  test("leaves a gh command alone when its $( is escaped inside double quotes", async () => {
+    const command = 'echo "\\$(gh pr create --body hello)"';
+
+    expect(await sign(command)).toBe(command);
+  });
+});
+
 describe("one line carrying both a commit and a pull request", () => {
   test("signs the commit and the pull request body", async () => {
     const rewritten = await sign('git commit -m "subject" && gh pr create --title t --body "hello"');

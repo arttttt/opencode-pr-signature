@@ -160,6 +160,9 @@ export function maskHeredocBodies(command: string): string {
  * `)` is the right one. Returns -1 when nothing starts here.
  */
 export function skipCommandSubstitution(command: string, index: number): number {
+  // `\$(…)` and `\`…\`` are text, not a substitution.
+  if (isEscapedAt(command, index)) return -1;
+
   if (command[index] === "`") {
     for (let i = index + 1; i < command.length; i++) {
       if (command[i] === "\\") i++;
@@ -254,6 +257,20 @@ function isSeparatorAt(command: string, index: number): boolean {
 }
 
 /**
+ * Record the commands inside the substitution at index, which ends at end.
+ *
+ * A substitution holds commands of its own — `OUT=$(git commit …)` is a real
+ * commit — so look inside, offsetting what is found back onto this string.
+ */
+function recordSubstitutionStarts(command: string, index: number, end: number, starts: Map<number, number>): void {
+  const innerStart = command[index] === "`" ? index + 1 : index + 2;
+  const inner = command.slice(innerStart, end - 1);
+  for (const [start, pipeline] of findCommandStarts(inner)) {
+    starts.set(innerStart + start, innerStart + pipeline);
+  }
+}
+
+/**
  * Collect the positions at which a command begins: the start of the string,
  * and the first non-blank character after every separator.
  *
@@ -282,14 +299,7 @@ export function findCommandStarts(command: string): Map<number, number> {
     } else if (!inSingleQuote && !inDoubleQuote) {
       const afterExpansion = skipCommandSubstitution(command, i);
       if (afterExpansion !== -1) {
-        // A substitution holds commands of its own — `OUT=$(git commit …)` is
-        // a real commit — so look inside, offsetting what is found back onto
-        // this string.
-        const innerStart = command[i] === "`" ? i + 1 : i + 2;
-        const inner = command.slice(innerStart, afterExpansion - 1);
-        for (const [start, pipeline] of findCommandStarts(inner)) {
-          starts.set(innerStart + start, innerStart + pipeline);
-        }
+        recordSubstitutionStarts(command, i, afterExpansion, starts);
         if (atStart) {
           if (!continuesCommand) pipelineStart = i;
           starts.set(i, pipelineStart);
@@ -316,6 +326,14 @@ export function findCommandStarts(command: string): Map<number, number> {
       // A continuation is blank space: its newline is read as whitespace on
       // the next turn, so the backslash must not be taken for a command.
       if (isContinuationAt(command, i)) continue;
+    } else if (inDoubleQuote) {
+      // Double quotes still expand `$(…)`: `echo "$(gh pr create …)"` runs gh.
+      const afterExpansion = skipCommandSubstitution(command, i);
+      if (afterExpansion !== -1) {
+        recordSubstitutionStarts(command, i, afterExpansion, starts);
+        i = afterExpansion - 1;
+        continue;
+      }
     }
 
     // `GIT_COMMITTER_DATE=… git commit …`: an assignment prefix leaves the
@@ -477,6 +495,9 @@ export function findCommandEndIndex(command: string, startIndex: number): number
         i = afterExpansion;
         continue;
       }
+      // A backtick that opens nothing closes the substitution this command
+      // sits in; like `)`, it is where the command ends.
+      if (char === "`" && !isEscapedAt(command, i)) return i;
       // A `#` opens a comment that would swallow anything appended after it.
       if (isSeparatorAt(command, i)) return i;
       if (i === startIndex ? char === "#" : opensCommentAt(command, i)) return i;
@@ -679,6 +700,8 @@ export function readShellWord(command: string, startIndex: number): ShellWord | 
       i = afterExpansion;
       continue;
     }
+
+    if (char === "`") break;
 
     if (char === "'" || char === '"') {
       quote = char;
