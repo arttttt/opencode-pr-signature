@@ -899,6 +899,20 @@ describe("commands inside substitutions", () => {
     expect(await sign(command)).toBe(`echo \`gh pr create --body ${body("hello")}\`; echo 'literal \`text\`'`);
   });
 
+  test("a backtick in an earlier comment does not make a later command look like it sits in backticks", async () => {
+    const command = "# literal `\ngh pr create --title `printf t` --body hello";
+
+    expect(await sign(command)).toBe(`# literal \`\ngh pr create --title \`printf t\` --body ${body("hello")}`);
+  });
+
+  test("a backtick quoted inside an earlier $( does not count either", async () => {
+    const command = `echo "$(printf '%s' '\`')"; gh pr create --title \`printf t\` --body hello`;
+
+    expect(await sign(command)).toBe(
+      `echo "$(printf '%s' '\`')"; gh pr create --title \`printf t\` --body ${body("hello")}`,
+    );
+  });
+
   test("leaves a gh command alone when its $( is escaped inside double quotes", async () => {
     const command = 'echo "\\$(gh pr create --body hello)"';
 

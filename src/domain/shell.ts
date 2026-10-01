@@ -220,17 +220,35 @@ function togglesQuote(command: string, index: number, inSingleQuote: boolean, in
 
 /**
  * Whether index sits inside a backtick substitution: an odd number of
- * unescaped backticks precede it, not counting those in single quotes.
+ * unescaped backticks precede it, not counting those in single quotes, in
+ * comments, or in a `$(…)` that is already closed. A `$(…)` the index sits in
+ * starts a fresh quoting context, so the quotes outside it stop mattering.
  */
 function insideBacktickAt(command: string, index: number): boolean {
   let inside = false;
   let inSingleQuote = false;
   let inDoubleQuote = false;
   for (let i = 0; i < index; i++) {
+    const char = command[i];
     if (togglesQuote(command, i, inSingleQuote, inDoubleQuote)) {
-      if (command[i] === "'") inSingleQuote = !inSingleQuote;
+      if (char === "'") inSingleQuote = !inSingleQuote;
       else inDoubleQuote = !inDoubleQuote;
-    } else if (command[i] === "`" && !inSingleQuote && !isEscapedAt(command, i)) {
+    } else if (inSingleQuote) {
+      continue;
+    } else if (!inDoubleQuote && opensCommentAt(command, i)) {
+      const newline = command.indexOf("\n", i);
+      if (newline === -1 || newline >= index) return inside;
+      i = newline;
+    } else if (char === "$" && command[i + 1] === "(") {
+      const end = skipCommandSubstitution(command, i);
+      if (end !== -1 && end <= index) {
+        i = end - 1;
+      } else if (end !== -1) {
+        inSingleQuote = false;
+        inDoubleQuote = false;
+        i++;
+      }
+    } else if (char === "`" && !isEscapedAt(command, i)) {
       inside = !inside;
     }
   }
