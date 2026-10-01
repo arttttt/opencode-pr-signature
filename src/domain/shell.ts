@@ -189,15 +189,31 @@ export function skipCommandSubstitution(command: string, index: number): number 
 }
 
 /**
+ * Whether the character at index is escaped by a backslash.
+ *
+ * A backslash escapes only the character right after it, so an odd run escapes
+ * and an even run does not: in `\\;` the `\\` is a literal backslash and leaves
+ * the `;` free to separate.
+ */
+function isEscapedAt(command: string, index: number): boolean {
+  let backslashes = 0;
+  for (let i = index - 1; i >= 0 && command[i] === "\\"; i--) backslashes++;
+  return backslashes % 2 === 1;
+}
+
+/**
  * Whether the character at index ends the command that precedes it.
  *
  * A newline separates as surely as a semicolon, `(` and `)` bound a subshell
  * or substitution, and a free-standing `&` backgrounds what came before — but
  * an `&` in 2>&1, >&2 or &>log is part of a redirection and belongs to the
- * command.
+ * command. None of them separates when a backslash escapes it: a `\` before a
+ * newline is a line continuation, so a command split across lines stays one
+ * command instead of being cut at the first line break.
  */
 function isSeparatorAt(command: string, index: number): boolean {
   const char = command[index];
+  if (isEscapedAt(command, index)) return false;
   if (char === "&") {
     const prevChar = index > 0 ? command[index - 1] : "";
     return !(prevChar === ">" || prevChar === "<" || command[index + 1] === ">");

@@ -684,6 +684,24 @@ describe("gh commands", () => {
     expect(await sign(command)).toBe(command);
   });
 
+  // A command split across lines with `\` continuations is still one command.
+  // Reading its first line break as its end spliced the signature into the
+  // middle and left gh a stray, space-prefixed `--body` to reject.
+  test("leaves a continued command with a body file alone", async () => {
+    const command = ["gh pr create --title t \\", "  --assignee me \\", "  --body-file msg.md"].join("\n");
+
+    expect(await sign(command)).toBe(command);
+  });
+
+  test("signs the body of a command continued across lines, in place", async () => {
+    const command = ["gh pr create --title t \\", "  --assignee me \\", "  --body hello"].join("\n");
+    const rewritten = await sign(command);
+
+    expect(rewritten).toBe(
+      ["gh pr create --title t \\", "  --assignee me \\", `  --body 'hello\n\n${signature}'`].join("\n"),
+    );
+  });
+
   test("evaluates the user's expression exactly once", async () => {
     const { body, directory } = await runGh(await sign('gh pr create --body "$(sh ./produce.sh)"'), {
       "produce.sh": 'echo call >> calls.log\nprintf "%s" "from a command"\n',
