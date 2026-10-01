@@ -600,6 +600,28 @@ export function hasPrecedingPipe(command: string, startIndex: number): boolean {
 }
 
 /**
+ * Drop the trailing blank space of a command, line continuations included.
+ *
+ * Text appended after a dangling `\<newline>` would sit behind its backslash,
+ * which then escapes the space and fuses ` --body` into one stray token.
+ */
+export function trimEndContinuation(command: string): string {
+  return command.replace(/(?:\\\n\s*)+$/, "").trimEnd();
+}
+
+/**
+ * The index of the first newline at or after index that ends its line, or the
+ * length of the command when none does. A newline a backslash escapes is not
+ * the end of the line.
+ */
+export function findLineEnd(command: string, index: number): number {
+  for (let i = command.indexOf("\n", index); i !== -1; i = command.indexOf("\n", i + 1)) {
+    if (!isEscapedAt(command, i)) return i;
+  }
+  return command.length;
+}
+
+/**
  * Wrap a value so the shell passes it through verbatim. Single quotes are the
  * only quoting in POSIX sh that suppresses every expansion, so an embedded
  * quote has to be closed, escaped and reopened.

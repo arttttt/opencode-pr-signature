@@ -11,6 +11,7 @@ import {
   maskHeredocBodies,
   quoteShellArgument,
   readShellWord,
+  trimEndContinuation,
 } from "./shell";
 
 /** What a gh command has to name, in order, to carry a body we can sign. */
@@ -134,7 +135,7 @@ export function addSignatureToGhCommand(command: string, signature: string): str
   if (body.kind === "unsupported") return command;
 
   if (body.kind === "absent") {
-    const trimmedPart = commandPart.trimEnd();
+    const trimmedPart = trimEndContinuation(commandPart);
     return beforeCommand + trimmedPart + ` --body ${quoteShellArgument(signature)}` + afterCommand;
   }
 

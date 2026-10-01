@@ -8,7 +8,15 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { findCommandEndIndex, findCommandStarts, findInvocation, readShellWord, skipLeadingOptions } from "../src/domain/shell";
+import {
+  findCommandEndIndex,
+  findCommandStarts,
+  findInvocation,
+  findLineEnd,
+  readShellWord,
+  skipLeadingOptions,
+  trimEndContinuation,
+} from "../src/domain/shell";
 
 /** git's own set: the options before a subcommand that eat the next word. */
 const gitValueOptions = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--attr-source", "--config-env"]);
@@ -242,5 +250,27 @@ describe("comments", () => {
     const command = "git commit -m a#b; echo";
 
     expect(findCommandEndIndex(command, 0)).toBe(command.indexOf(";"));
+  });
+});
+
+describe("trimEndContinuation", () => {
+  test("drops trailing continuations and the blank space around them", () => {
+    expect(trimEndContinuation("gh pr create \\\n  \\\n")).toBe("gh pr create");
+  });
+
+  test("leaves a command that ends in a plain word alone", () => {
+    expect(trimEndContinuation("git commit -m x  ")).toBe("git commit -m x");
+  });
+});
+
+describe("findLineEnd", () => {
+  test("skips a newline that a backslash escapes", () => {
+    const command = "a \\\n b\nc";
+
+    expect(findLineEnd(command, 0)).toBe(command.lastIndexOf("\n"));
+  });
+
+  test("is the length of the command when no line ends", () => {
+    expect(findLineEnd("a \\\n b", 0)).toBe(6);
   });
 });

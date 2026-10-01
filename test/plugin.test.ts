@@ -864,6 +864,26 @@ describe("commands inside substitutions", () => {
   });
 });
 
+describe("a continuation at the end of a command", () => {
+  test("adds a missing gh body after the continuation, not behind its backslash", async () => {
+    const command = "gh pr create --title t \\\n";
+
+    expect(await sign(command)).toBe(`gh pr create --title t --body '${signature}'`);
+  });
+
+  test("adds the signature to a git commit message after a trailing continuation", async () => {
+    const command = "git commit -m hello \\\n";
+
+    expect(await sign(command)).toBe(`git commit -m hello -m '${signature}'`);
+  });
+
+  test("signs a heredoc message whose header sits on a continued line", async () => {
+    const command = "git commit -F - \\\n  <<EOF\nsubject\nEOF";
+
+    expect(await sign(command)).toBe(`git commit -F - \\\n  <<EOF\nsubject\n\n${signature}\nEOF`);
+  });
+});
+
 describe("one line carrying both a commit and a pull request", () => {
   test("signs the commit and the pull request body", async () => {
     const rewritten = await sign('git commit -m "subject" && gh pr create --title t --body "hello"');
