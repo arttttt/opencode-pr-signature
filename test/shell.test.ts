@@ -16,6 +16,7 @@ import {
   hasUnclosedQuote,
   readShellWord,
   rewriteInNestedBackticks,
+  skipQuoted,
   skipLeadingOptions,
   trimEndContinuation,
 } from "../src/domain/shell";
@@ -349,5 +350,35 @@ describe("rewriteInNestedBackticks", () => {
     const command = "echo 'a `b \\`gh\\``'";
 
     expect(rewriteInNestedBackticks(command, nested)).toBe(command);
+  });
+});
+
+describe("skipQuoted", () => {
+  test.each([
+    ["'a\\'b", 4],
+    ["$'a\\'b' c", 7],
+    ['"a\\"b" c', 6],
+    [`"$(printf '%s' "it's")" c`, 23],
+  ])("%s closes at %p", (text, end) => {
+    expect(skipQuoted(text, 0)).toBe(end);
+  });
+
+  test.each(["'abc", "$'a\\'", '"a\\"'])("%s never closes", (text) => {
+    expect(skipQuoted(text, 0)).toBe(-1);
+  });
+
+  test("opens nothing at an escaped quote or plain text", () => {
+    expect(skipQuoted("\\'a", 1)).toBeUndefined();
+    expect(skipQuoted("abc", 0)).toBeUndefined();
+  });
+
+  test("reports each substitution inside double quotes", () => {
+    const found: [number, number][] = [];
+    skipQuoted('"a $(b) `c`"', 0, (start, end) => found.push([start, end]));
+
+    expect(found).toEqual([
+      [3, 7],
+      [8, 11],
+    ]);
   });
 });

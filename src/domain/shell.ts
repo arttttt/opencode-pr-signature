@@ -108,21 +108,15 @@ function maskHeredocBody(command: string, masked: string[], start: number, heade
 export function maskHeredocBodies(command: string): string {
   const masked = command.split("");
   const pending: HeredocHeader[] = [];
-  let quote: string | undefined;
   let i = 0;
 
   while (i < command.length) {
     const char = command[i];
 
-    if (quote) {
-      if (char === "\\" && quote === '"' && i + 1 < command.length) i++;
-      else if (char === quote) quote = undefined;
-      i++;
-      continue;
-    }
-    if (char === "'" || char === '"') {
-      quote = char;
-      i++;
+    const afterQuote = skipQuoted(command, i);
+    if (afterQuote === -1) break;
+    if (afterQuote !== undefined) {
+      i = afterQuote;
       continue;
     }
     if (char === "\\" && i + 1 < command.length) {
@@ -174,21 +168,126 @@ export function skipCommandSubstitution(command: string, index: number): number 
   if (command[index] !== "$" || command[index + 1] !== "(") return -1;
 
   let depth = 0;
-  let quote: string | undefined;
   for (let i = index + 1; i < command.length; i++) {
     const char = command[i];
-    if (quote) {
-      if (char === "\\" && quote === '"') i++;
-      else if (char === quote) quote = undefined;
-      continue;
-    }
-    if (char === "'" || char === '"') quote = char;
+    const afterQuote = skipQuoted(command, i);
+    if (afterQuote === -1) return -1;
+    if (afterQuote !== undefined) i = afterQuote - 1;
     else if (char === "\\") i++;
+    else if (opensCommentAt(command, i)) {
+      const newline = command.indexOf("\n", i);
+      if (newline === -1) return -1;
+      i = newline - 1;
+    }
     else if (char === "(") depth++;
     else if (char === ")" && --depth === 0) return i + 1;
   }
 
   return -1;
+}
+
+/**
+ * If a quote opens at index — `'…'`, `"…"` or `$'…'` — return the index just
+ * past its closing quote, or -1 when it never closes. Returns undefined when
+ * no quote opens here; the caller must be reading unquoted text.
+ *
+ * Each kind closes by its own rules: single quotes have no escapes at all, so
+ * `'a\'` is closed; `$'…'` and double quotes honour a backslash, so `$'a\''`
+ * and `"a\""` are not. Double quotes still expand `$(…)` and backticks, whose
+ * own quotes are their business: `"$(printf '%s' "it's")"` is one span, and
+ * each substitution inside is reported to onSubstitution.
+ */
+export function skipQuoted(
+  command: string,
+  index: number,
+  onSubstitution?: (start: number, end: number) => void,
+): number | undefined {
+  const char = command[index];
+  if (isEscapedAt(command, index)) return undefined;
+
+  if (char === "'") {
+    const close = command.indexOf("'", index + 1);
+    return close === -1 ? -1 : close + 1;
+  }
+
+  if (char === "$" && command[index + 1] === "'") {
+    for (let i = index + 2; i < command.length; i++) {
+      if (command[i] === "\\") i++;
+      else if (command[i] === "'") return i + 1;
+    }
+    return -1;
+  }
+
+  if (char !== '"') return undefined;
+  for (let i = index + 1; i < command.length; i++) {
+    if (command[i] === "\\") {
+      i++;
+      continue;
+    }
+    if (command[i] === '"') return i + 1;
+    const afterExpansion = skipCommandSubstitution(command, i);
+    if (afterExpansion !== -1) {
+      onSubstitution?.(i, afterExpansion);
+      i = afterExpansion - 1;
+    }
+  }
+  return -1;
+}
+
+/** A command substitution: `$(…)` or backticks, from its opening to just past its close. */
+type Substitution = { start: number; end: number };
+
+/**
+ * Every command substitution in the command, nested ones included, in the
+ * order they open. Single-quoted text and comments hold none; a substitution's
+ * body is read as a command of its own, with fresh quoting.
+ */
+function collectSubstitutions(command: string, offset = 0, found: Substitution[] = []): Substitution[] {
+  const record = (start: number, end: number) => {
+    found.push({ start: offset + start, end: offset + end });
+    const bodyStart = command[start] === "`" ? start + 1 : start + 2;
+    collectSubstitutions(command.slice(bodyStart, end - 1), offset + bodyStart, found);
+  };
+
+  for (let i = 0; i < command.length; i++) {
+    const afterQuote = skipQuoted(command, i, record);
+    if (afterQuote === -1) break;
+    if (afterQuote !== undefined) {
+      i = afterQuote - 1;
+      continue;
+    }
+    if (command[i] === "\\") {
+      i++;
+      continue;
+    }
+    if (opensCommentAt(command, i)) {
+      const newline = command.indexOf("\n", i);
+      if (newline === -1) break;
+      i = newline;
+      continue;
+    }
+    const afterExpansion = skipCommandSubstitution(command, i);
+    if (afterExpansion !== -1) {
+      record(i, afterExpansion);
+      i = afterExpansion - 1;
+    }
+  }
+  return found;
+}
+
+/**
+ * Where the text a scan from index may read ends: at the closing backtick when
+ * index sits inside a backtick substitution, else at the end of the command.
+ *
+ * The shell finds a closing backtick before it reads any quoting, so nothing
+ * past it — not even the rest of a quote it cuts — belongs to this command.
+ */
+function scanLimit(command: string, index: number): number {
+  let innermost: Substitution | undefined;
+  for (const substitution of collectSubstitutions(command)) {
+    if (substitution.start < index && index < substitution.end) innermost = substitution;
+  }
+  return innermost && command[innermost.start] === "`" ? innermost.end - 1 : command.length;
 }
 
 /**
@@ -205,74 +304,22 @@ function isEscapedAt(command: string, index: number): boolean {
 }
 
 /**
- * Whether the quote character at index opens or closes a quote of its own kind.
- *
- * Single quotes have no escapes at all: a backslash inside them is a letter,
- * so `'a\'` is closed. Double quotes honour one, decided by the parity of the
- * backslash run, so `"a\\"` is closed and `"a\""` is not.
- */
-function togglesQuote(command: string, index: number, inSingleQuote: boolean, inDoubleQuote: boolean): boolean {
-  const char = command[index];
-  if (char === "'") return inSingleQuote || (!inDoubleQuote && !isEscapedAt(command, index));
-  if (char === '"') return !inSingleQuote && !isEscapedAt(command, index);
-  return false;
-}
-
-/**
  * Whether a quote opened in the text is never closed. Such text is not a
  * command the shell would run, so it is no place to append anything.
  */
 export function hasUnclosedQuote(text: string): boolean {
-  let inSingleQuote = false;
-  let inDoubleQuote = false;
   for (let i = 0; i < text.length; i++) {
-    if (togglesQuote(text, i, inSingleQuote, inDoubleQuote)) {
-      if (text[i] === "'") inSingleQuote = !inSingleQuote;
-      else inDoubleQuote = !inDoubleQuote;
+    const afterQuote = skipQuoted(text, i);
+    if (afterQuote === -1) return true;
+    if (afterQuote !== undefined) {
+      i = afterQuote - 1;
       continue;
     }
-    // A substitution quotes on its own: `"$(printf '%s' "it's")"` is closed.
-    const afterExpansion = inSingleQuote ? -1 : skipCommandSubstitution(text, i);
+    if (opensCommentAt(text, i)) return false;
+    const afterExpansion = skipCommandSubstitution(text, i);
     if (afterExpansion !== -1) i = afterExpansion - 1;
   }
-  return inSingleQuote || inDoubleQuote;
-}
-
-/**
- * Whether index sits inside a backtick substitution: an odd number of
- * unescaped backticks precede it, not counting those in single quotes, in
- * comments, or in a `$(…)` that is already closed. A `$(…)` the index sits in
- * starts a fresh quoting context, so the quotes outside it stop mattering.
- */
-function insideBacktickAt(command: string, index: number): boolean {
-  let inside = false;
-  let inSingleQuote = false;
-  let inDoubleQuote = false;
-  for (let i = 0; i < index; i++) {
-    const char = command[i];
-    if (togglesQuote(command, i, inSingleQuote, inDoubleQuote)) {
-      if (char === "'") inSingleQuote = !inSingleQuote;
-      else inDoubleQuote = !inDoubleQuote;
-    } else if (inSingleQuote) {
-      continue;
-    } else if (!inDoubleQuote && opensCommentAt(command, i)) {
-      const newline = command.indexOf("\n", i);
-      if (newline === -1 || newline >= index) return inside;
-      i = newline;
-    } else if (char === "$" && command[i + 1] === "(") {
-      const end = skipCommandSubstitution(command, i);
-      if (end !== -1 && end <= index) {
-        i = end - 1;
-      } else if (end !== -1) {
-        inSingleQuote = false;
-        inDoubleQuote = false;
-        i++;
-      }
-    } else if (char === "`" && !isEscapedAt(command, i)) {
-      inside = !inside;
-    }
-  }
-  return inside;
+  return false;
 }
 
 /**
@@ -343,8 +390,6 @@ function recordSubstitutionStarts(command: string, index: number, end: number, s
  */
 export function findCommandStarts(command: string): Map<number, number> {
   const starts = new Map<number, number>();
-  let inSingleQuote = false;
-  let inDoubleQuote = false;
   let atStart = true;
   let inAssignment = false;
   // Where the whole simple command begins, assignment prefix included. A new
@@ -356,56 +401,51 @@ export function findCommandStarts(command: string): Map<number, number> {
   for (let i = 0; i < command.length; i++) {
     const char = command[i];
 
-    if (togglesQuote(command, i, inSingleQuote, inDoubleQuote)) {
-      if (char === "'") inSingleQuote = !inSingleQuote;
-      else inDoubleQuote = !inDoubleQuote;
-    } else if (!inSingleQuote && !inDoubleQuote) {
-      const afterExpansion = skipCommandSubstitution(command, i);
-      if (afterExpansion !== -1) {
-        recordSubstitutionStarts(command, i, afterExpansion, starts);
-        if (atStart) {
-          if (!continuesCommand) pipelineStart = i;
-          starts.set(i, pipelineStart);
-          atStart = false;
-          inAssignment = false;
-          continuesCommand = false;
-        }
-        i = afterExpansion - 1;
-        continue;
-      }
-      if (isSeparatorAt(command, i)) {
-        atStart = true;
+    // A quote or a substitution is one unit of a word. Commands inside a
+    // substitution are real — `OUT=$(git commit …)`, `echo "$(gh …)"` — so
+    // look inside, offsetting what is found back onto this string.
+    const afterQuote = skipQuoted(command, i, (start, end) => recordSubstitutionStarts(command, start, end, starts));
+    const afterExpansion = afterQuote === undefined ? skipCommandSubstitution(command, i) : -1;
+    if (afterExpansion !== -1) recordSubstitutionStarts(command, i, afterExpansion, starts);
+    const unitEnd = afterQuote ?? (afterExpansion === -1 ? undefined : afterExpansion);
+    if (unitEnd !== undefined) {
+      if (atStart) {
+        if (!continuesCommand) pipelineStart = i;
+        starts.set(i, pipelineStart);
+        atStart = false;
         inAssignment = false;
         continuesCommand = false;
-        continue;
       }
-      // A comment runs to the end of its line, whatever its text ends with,
-      // so its newline separates even after a backslash: that backslash is
-      // part of the comment, not an escape.
-      if (opensCommentAt(command, i)) {
-        const newline = command.indexOf("\n", i);
-        i = newline === -1 ? command.length : newline;
-        atStart = true;
-        inAssignment = false;
-        continuesCommand = false;
-        continue;
-      }
-      // A continuation is blank space: its newline is read as whitespace on
-      // the next turn, so the backslash must not be taken for a command.
-      if (isContinuationAt(command, i)) continue;
-    } else if (inDoubleQuote) {
-      // Double quotes still expand `$(…)`: `echo "$(gh pr create …)"` runs gh.
-      const afterExpansion = skipCommandSubstitution(command, i);
-      if (afterExpansion !== -1) {
-        recordSubstitutionStarts(command, i, afterExpansion, starts);
-        i = afterExpansion - 1;
-        continue;
-      }
+      // An unclosed quote runs to the end: nothing after it is syntax.
+      if (unitEnd === -1) break;
+      i = unitEnd - 1;
+      continue;
     }
+
+    if (isSeparatorAt(command, i)) {
+      atStart = true;
+      inAssignment = false;
+      continuesCommand = false;
+      continue;
+    }
+    // A comment runs to the end of its line, whatever its text ends with,
+    // so its newline separates even after a backslash: that backslash is
+    // part of the comment, not an escape.
+    if (opensCommentAt(command, i)) {
+      const newline = command.indexOf("\n", i);
+      i = newline === -1 ? command.length : newline;
+      atStart = true;
+      inAssignment = false;
+      continuesCommand = false;
+      continue;
+    }
+    // A continuation is blank space: its newline is read as whitespace on
+    // the next turn, so the backslash must not be taken for a command.
+    if (isContinuationAt(command, i)) continue;
 
     // `GIT_COMMITTER_DATE=… git commit …`: an assignment prefix leaves the
     // word after it still in command position, and part of the same command.
-    if (inAssignment && !inSingleQuote && !inDoubleQuote && /\s/.test(char) && !isEscapedAt(command, i)) {
+    if (inAssignment && /\s/.test(char) && !isEscapedAt(command, i)) {
       atStart = true;
       inAssignment = false;
       continuesCommand = true;
@@ -546,45 +586,33 @@ export function findInvocation(
  * @returns The index where command ends (before a separator or end of string)
  */
 export function findCommandEndIndex(command: string, startIndex: number): number {
-  let inSingleQuote = false;
-  let inDoubleQuote = false;
-  let i = startIndex;
-  const inBacktick = insideBacktickAt(command, startIndex);
+  // Inside a backtick substitution its closing backtick is where the command
+  // ends, like `)`, whatever quoting it cuts through.
+  const limit = scanLimit(command, startIndex);
+  const text = command.slice(0, limit);
 
-  while (i < command.length) {
-    const char = command[i];
-
-    // Inside a backtick substitution the next unescaped backtick closes it,
-    // even within quotes: the shell finds the closing backtick before it
-    // reads any quoting. A nested one would have to be escaped. Like `)`, it
-    // is where the command ends.
-    if (char === "`" && inBacktick && !isEscapedAt(command, i)) return i;
-
-    if (togglesQuote(command, i, inSingleQuote, inDoubleQuote)) {
-      if (char === "'") inSingleQuote = !inSingleQuote;
-      else inDoubleQuote = !inDoubleQuote;
-    } else if (!inSingleQuote && !inDoubleQuote) {
-      const afterExpansion = skipCommandSubstitution(command, i);
-      if (afterExpansion !== -1) {
-        i = afterExpansion;
-        continue;
-      }
-      if (char === "`" && !isEscapedAt(command, i)) return i;
-      // A `#` opens a comment that would swallow anything appended after it.
-      if (isSeparatorAt(command, i)) return i;
-      if (i === startIndex ? char === "#" : opensCommentAt(command, i)) return i;
-    } else if (inDoubleQuote) {
-      // Double quotes still expand `$(…)`, whose own quotes are its business.
-      const afterExpansion = skipCommandSubstitution(command, i);
-      if (afterExpansion !== -1) {
-        i = afterExpansion;
-        continue;
-      }
+  for (let i = startIndex; i < text.length; i++) {
+    const char = text[i];
+    const afterQuote = skipQuoted(text, i);
+    if (afterQuote === -1) return limit;
+    if (afterQuote !== undefined) {
+      i = afterQuote - 1;
+      continue;
     }
-    i++;
+    const afterExpansion = skipCommandSubstitution(text, i);
+    if (afterExpansion !== -1) {
+      i = afterExpansion - 1;
+      continue;
+    }
+    // A backtick that opens nothing closes a substitution this scan cannot
+    // see the start of.
+    if (char === "`" && !isEscapedAt(text, i)) return i;
+    if (isSeparatorAt(text, i)) return i;
+    // A `#` opens a comment that would swallow anything appended after it.
+    if (i === startIndex ? char === "#" : opensCommentAt(text, i)) return i;
   }
 
-  return command.length;
+  return limit;
 }
 
 /**
@@ -609,26 +637,21 @@ export type StdinRedirect =
  */
 export function findStdinRedirect(command: string): StdinRedirect {
   let found: StdinRedirect = { kind: "none" };
-  let inSingleQuote = false;
-  let inDoubleQuote = false;
 
   for (let i = 0; i < command.length; i++) {
     const char = command[i];
 
-    if (togglesQuote(command, i, inSingleQuote, inDoubleQuote)) {
-      if (char === "'") inSingleQuote = !inSingleQuote;
-      else inDoubleQuote = !inDoubleQuote;
+    const afterQuote = skipQuoted(command, i);
+    if (afterQuote === -1) break;
+    if (afterQuote !== undefined) {
+      i = afterQuote - 1;
       continue;
     }
-    if (inSingleQuote) continue;
-
-    // Double quotes still expand `$(…)`, whose own quotes are its business.
     const afterExpansion = skipCommandSubstitution(command, i);
     if (afterExpansion !== -1) {
       i = afterExpansion - 1;
       continue;
     }
-    if (inDoubleQuote) continue;
     if (char !== "<") continue;
 
     // A digit run immediately before `<` is a file descriptor only when it
@@ -728,35 +751,16 @@ export function rewriteInNestedBackticks(command: string, rewrite: (command: str
   const rewritten = rewrite(command);
   if (rewritten !== command) return rewritten;
 
-  let inSingleQuote = false;
-  let inDoubleQuote = false;
-  for (let i = 0; i < command.length; i++) {
-    const char = command[i];
-    if (togglesQuote(command, i, inSingleQuote, inDoubleQuote)) {
-      if (char === "'") inSingleQuote = !inSingleQuote;
-      else inDoubleQuote = !inDoubleQuote;
-      continue;
-    }
-    if (inSingleQuote) continue;
-    if (!inDoubleQuote && opensCommentAt(command, i)) {
-      const newline = command.indexOf("\n", i);
-      if (newline === -1) break;
-      i = newline;
-      continue;
-    }
-    if (char !== "`") continue;
+  for (const { start, end } of collectSubstitutions(command)) {
+    if (command[start] !== "`") continue;
+    const body = command.slice(start + 1, end - 1);
+    if (!body.includes("\\`")) continue;
 
-    const end = skipCommandSubstitution(command, i);
-    if (end === -1) continue;
-    const body = command.slice(i + 1, end - 1);
-    if (body.includes("\\`")) {
-      const inner = body.replace(/\\([\\`$])/g, "$1");
-      const signed = rewriteInNestedBackticks(inner, rewrite);
-      if (signed !== inner) {
-        return command.slice(0, i + 1) + signed.replace(/[\\`]/g, "\\$&") + command.slice(end - 1);
-      }
+    const inner = body.replace(/\\([\\`$])/g, "$1");
+    const signed = rewriteInNestedBackticks(inner, rewrite);
+    if (signed !== inner) {
+      return command.slice(0, start + 1) + signed.replace(/[\\`]/g, "\\$&") + command.slice(end - 1);
     }
-    i = end - 1;
   }
   return command;
 }
@@ -795,14 +799,11 @@ export type ShellWord = {
  * while `cat` would concatenate them all into one message.
  */
 export function hasUnquotedGlob(raw: string): boolean {
-  let quote: string | undefined;
   for (let i = 0; i < raw.length; i++) {
     const char = raw[i];
-    if (quote) {
-      if (char === quote) quote = undefined;
-      continue;
-    }
-    if (char === "'" || char === '"') quote = char;
+    const afterQuote = skipQuoted(raw, i);
+    if (afterQuote === -1) return false;
+    if (afterQuote !== undefined) i = afterQuote - 1;
     else if (char === "\\") i++;
     else if (char === "*" || char === "?" || char === "[") return true;
   }
@@ -831,57 +832,37 @@ export function readShellWord(command: string, startIndex: number): ShellWord | 
   while (/\s/.test(command[start] ?? "") || isContinuationAt(command, start)) {
     start += isContinuationAt(command, start) ? 2 : 1;
   }
-  if (!command[start] || WORD_TERMINATORS.test(command[start])) return undefined;
+  // Inside a backtick substitution its closing backtick ends every word.
+  const text = command.slice(0, scanLimit(command, start));
+  if (!text[start] || WORD_TERMINATORS.test(text[start])) return undefined;
 
   let value = "";
-  let quote: "'" | '"' | undefined;
   let i = start;
-  const inBacktick = insideBacktickAt(command, start);
 
-  while (i < command.length) {
-    const char = command[i];
-    if (char === "`" && inBacktick && !isEscapedAt(command, i)) break;
-    if (quote === '"') {
-      // Double quotes still expand `$(…)`, whose own quotes are its business.
-      const afterExpansion = skipCommandSubstitution(command, i);
-      if (afterExpansion !== -1) {
-        value += command.slice(i, afterExpansion);
-        i = afterExpansion;
-        continue;
-      }
-    }
-    if (quote) {
-      if (char === quote) {
-        quote = undefined;
-      } else if (char === "\\" && quote === '"' && i + 1 < command.length) {
-        // Inside double quotes a backslash escapes only these; before any
-        // other character it stays, and before a newline it vanishes with it.
-        const next = command[i + 1];
-        if (next === "\n") i++;
-        else if (/["\\$`]/.test(next)) value += command[++i];
-        else value += char;
-      } else {
-        value += char;
-      }
-      i++;
+  while (i < text.length) {
+    const char = text[i];
+
+    const afterQuote = skipQuoted(text, i);
+    if (afterQuote === -1) return undefined;
+    if (afterQuote !== undefined) {
+      value += quotedValue(text.slice(i, afterQuote));
+      i = afterQuote;
       continue;
     }
 
-    const afterExpansion = skipCommandSubstitution(command, i);
+    const afterExpansion = skipCommandSubstitution(text, i);
     if (afterExpansion !== -1) {
-      value += command.slice(i, afterExpansion);
+      value += text.slice(i, afterExpansion);
       i = afterExpansion;
       continue;
     }
 
     if (char === "`") break;
 
-    if (char === "'" || char === '"') {
-      quote = char;
-    } else if (isContinuationAt(command, i)) {
+    if (isContinuationAt(text, i)) {
       i++;
-    } else if (char === "\\" && i + 1 < command.length) {
-      value += command[++i];
+    } else if (char === "\\" && i + 1 < text.length) {
+      value += text[++i];
     } else if (/\s/.test(char) || WORD_TERMINATORS.test(char)) {
       break;
     } else {
@@ -890,6 +871,37 @@ export function readShellWord(command: string, startIndex: number): ShellWord | 
     i++;
   }
 
-  if (quote || i === start) return undefined;
-  return { raw: command.slice(start, i), value, start, end: i };
+  if (i === start) return undefined;
+  return { raw: text.slice(start, i), value, start, end: i };
+}
+
+/**
+ * The text a closed quote stands for. Single quotes keep everything. Inside
+ * double quotes a backslash escapes only `"`, `\`, `$` and backtick, and
+ * vanishes with a newline; before anything else it stays. `$'…'` keeps its
+ * escapes as written: a value spelled that way carries a `$`, which callers
+ * already hand to the shell to expand rather than read themselves.
+ */
+function quotedValue(quoted: string): string {
+  if (quoted.startsWith("'")) return quoted.slice(1, -1);
+  if (quoted.startsWith("$'")) return quoted.slice(2, -1);
+
+  let value = "";
+  const inner = quoted.slice(1, -1);
+  for (let i = 0; i < inner.length; i++) {
+    const char = inner[i];
+    const afterExpansion = skipCommandSubstitution(inner, i);
+    if (afterExpansion !== -1) {
+      value += inner.slice(i, afterExpansion);
+      i = afterExpansion - 1;
+    } else if (char === "\\" && i + 1 < inner.length) {
+      const next = inner[i + 1];
+      if (next === "\n") i++;
+      else if (/["\\$`]/.test(next)) value += inner[++i];
+      else value += char;
+    } else {
+      value += char;
+    }
+  }
+  return value;
 }

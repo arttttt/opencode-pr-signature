@@ -974,6 +974,12 @@ describe("commands inside substitutions", () => {
     );
   });
 
+  test("leaves an escaped-backtick example quoted inside $( ) alone", async () => {
+    const command = "echo \"$(printf '%s' '`echo \\`gh pr create --body hello\\``')\"";
+
+    expect(await sign(command)).toBe(command);
+  });
+
   test("leaves a gh command alone when its $( is escaped inside double quotes", async () => {
     const command = 'echo "\\$(gh pr create --body hello)"';
 
@@ -1018,6 +1024,27 @@ describe("a continuation at the end of a command", () => {
     const command = "git commit -F - \\\n  <<EOF\nsubject\nEOF";
 
     expect(await sign(command)).toBe(`git commit -F - \\\n  <<EOF\nsubject\n\n${signature}\nEOF`);
+  });
+});
+
+describe("ANSI-C quoting", () => {
+  test("signs a gh body next to a $'…' argument holding an escaped quote", async () => {
+    const command = "gh pr create --body hello --title $'don\\'t'";
+
+    expect(await sign(command)).toBe(`gh pr create --body 'hello\n\n${signature}' --title $'don\\'t'`);
+  });
+
+  test("signs a commit next to a $'…' argument holding an escaped quote", async () => {
+    const command = "git commit -m hello --author $'O\\'Neil <x@y>'";
+
+    expect(await sign(command)).toBe(`git commit -m hello --author $'O\\'Neil <x@y>' -m '${signature}'`);
+  });
+
+  test("hands a $'…' body to the shell to expand rather than reading it", async () => {
+    const rewritten = await sign("gh pr create --body $'a\\nb'");
+
+    expect(rewritten).toContain("$'a\\nb'");
+    expect(rewritten).toContain(signature);
   });
 });
 
