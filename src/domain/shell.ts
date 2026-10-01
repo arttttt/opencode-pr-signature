@@ -202,6 +202,15 @@ function isEscapedAt(command: string, index: number): boolean {
 }
 
 /**
+ * Whether a line continuation — a backslash that escapes a newline — starts at
+ * index. The shell deletes the pair before it reads anything, so to a scanner
+ * it is neither a word nor a separator, only a place the line breaks.
+ */
+export function isContinuationAt(command: string, index: number): boolean {
+  return command[index] === "\\" && command[index + 1] === "\n" && !isEscapedAt(command, index);
+}
+
+/**
  * Whether the character at index ends the command that precedes it.
  *
  * A newline separates as surely as a semicolon, `(` and `)` bound a subshell
@@ -276,6 +285,9 @@ export function findCommandStarts(command: string): Map<number, number> {
         continuesCommand = false;
         continue;
       }
+      // A continuation is blank space: its newline is read as whitespace on
+      // the next turn, so the backslash must not be taken for a command.
+      if (isContinuationAt(command, i)) continue;
     }
 
     // `GIT_COMMITTER_DATE=… git commit …`: an assignment prefix leaves the
@@ -612,7 +624,9 @@ const WORD_TERMINATORS = /[;|&<>]/;
  */
 export function readShellWord(command: string, startIndex: number): ShellWord | undefined {
   let start = startIndex;
-  while (/\s/.test(command[start] ?? "")) start++;
+  while (/\s/.test(command[start] ?? "") || isContinuationAt(command, start)) {
+    start += isContinuationAt(command, start) ? 2 : 1;
+  }
   if (!command[start] || WORD_TERMINATORS.test(command[start])) return undefined;
 
   let value = "";
@@ -625,7 +639,12 @@ export function readShellWord(command: string, startIndex: number): ShellWord | 
       if (char === quote) {
         quote = undefined;
       } else if (char === "\\" && quote === '"' && i + 1 < command.length) {
-        value += command[++i];
+        // Inside double quotes a backslash escapes only these; before any
+        // other character it stays, and before a newline it vanishes with it.
+        const next = command[i + 1];
+        if (next === "\n") i++;
+        else if (/["\\$`]/.test(next)) value += command[++i];
+        else value += char;
       } else {
         value += char;
       }
@@ -642,6 +661,8 @@ export function readShellWord(command: string, startIndex: number): ShellWord | 
 
     if (char === "'" || char === '"') {
       quote = char;
+    } else if (isContinuationAt(command, i)) {
+      i++;
     } else if (char === "\\" && i + 1 < command.length) {
       value += command[++i];
     } else if (/\s/.test(char) || WORD_TERMINATORS.test(char)) {

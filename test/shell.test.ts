@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { findCommandEndIndex, findInvocation, readShellWord, skipLeadingOptions } from "../src/domain/shell";
+import { findCommandEndIndex, findCommandStarts, findInvocation, readShellWord, skipLeadingOptions } from "../src/domain/shell";
 
 /** git's own set: the options before a subcommand that eat the next word. */
 const gitValueOptions = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--attr-source", "--config-env"]);
@@ -151,5 +151,44 @@ describe("findCommandEndIndex", () => {
     const command = "gh pr create --title a\\\\;b --body hello";
 
     expect(findCommandEndIndex(command, 0)).toBe(command.indexOf(";"));
+  });
+});
+
+describe("readShellWord across a line continuation", () => {
+  test("drops a continuation before the word instead of reading it into the value", () => {
+    expect(readShellWord("\\\n--body", 0)?.value).toBe("--body");
+  });
+
+  test("drops a continuation inside an unquoted word", () => {
+    expect(readShellWord("hel\\\nlo", 0)?.value).toBe("hello");
+  });
+
+  test("drops a continuation inside double quotes", () => {
+    expect(readShellWord('"a\\\nb"', 0)?.value).toBe("ab");
+  });
+
+  test("keeps a continuation literal inside single quotes", () => {
+    expect(readShellWord("'a\\\nb'", 0)?.value).toBe("a\\\nb");
+  });
+
+  test("keeps a backslash that double quotes do not treat as an escape", () => {
+    expect(readShellWord('"C:\\new"', 0)?.value).toBe("C:\\new");
+  });
+
+  test.each([
+    ['"a\\"b"', 'a"b'],
+    ['"a\\\\b"', "a\\b"],
+    ['"a\\$b"', "a$b"],
+  ])("still unescapes what double quotes do escape: %s", (raw, value) => {
+    expect(readShellWord(raw, 0)?.value).toBe(value);
+  });
+});
+
+describe("findCommandStarts across a line continuation", () => {
+  test("a continuation after an operator is blank space, not the start of a command", () => {
+    const command = "echo a && \\\n  gh pr create";
+
+    expect([...findCommandStarts(command).keys()]).toContain(command.indexOf("gh"));
+    expect(findCommandStarts(command).has(command.indexOf("\\"))).toBe(false);
   });
 });

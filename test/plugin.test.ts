@@ -762,6 +762,40 @@ describe("gh commands", () => {
   });
 });
 
+describe("commands continued across lines", () => {
+  const body = (text: string) => `'${text}\n\n${signature}'`;
+
+  test("signs a gh body whose option name follows the continuation", async () => {
+    const command = "gh pr create \\\n--body hello";
+
+    expect(await sign(command)).toBe(`gh pr create \\\n--body ${body("hello")}`);
+  });
+
+  test("signs a gh body whose value follows the continuation", async () => {
+    const command = "gh pr create --body \\\nhello";
+
+    expect(await sign(command)).toBe(`gh pr create --body ${body("hello")}`);
+  });
+
+  test("finds the command that follows a continuation after an operator", async () => {
+    const command = "echo before && \\\n  gh pr create --body hello";
+
+    expect(await sign(command)).toBe(`echo before && \\\n  gh pr create --body ${body("hello")}`);
+  });
+
+  test("signs a git commit continued after the subcommand", async () => {
+    const command = "git commit \\\n  -m hello";
+
+    expect(await sign(command)).toBe(`git commit \\\n  -m hello -m '${signature}'`);
+  });
+
+  test("signs a git commit that follows a continued &&", async () => {
+    const command = "git add . && \\\n  git commit -m hello";
+
+    expect(await sign(command)).toBe(`git add . && \\\n  git commit -m hello -m '${signature}'`);
+  });
+});
+
 describe("one line carrying both a commit and a pull request", () => {
   test("signs the commit and the pull request body", async () => {
     const rewritten = await sign('git commit -m "subject" && gh pr create --title t --body "hello"');
