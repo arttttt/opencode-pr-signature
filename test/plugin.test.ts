@@ -805,6 +805,18 @@ describe("backslashes, quotes and comments around a command", () => {
     expect(await sign(command)).toBe(`# note \\\ngh pr create --body ${body("hello")}`);
   });
 
+  test("signs the next line's command after an inline comment that ends in a backslash", async () => {
+    const command = "echo before # foo \\\ngh pr create --body hello";
+
+    expect(await sign(command)).toBe(`echo before # foo \\\ngh pr create --body ${body("hello")}`);
+  });
+
+  test("signs a commit on the line after a comment that ends in a backslash", async () => {
+    const command = "echo before # foo \\\ngit commit -m hello";
+
+    expect(await sign(command)).toBe(`echo before # foo \\\ngit commit -m hello -m '${signature}'`);
+  });
+
   test("leaves a gh command that only appears in a comment alone", async () => {
     const command = "echo before # ; gh pr create --body hello";
 

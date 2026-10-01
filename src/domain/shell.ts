@@ -316,11 +316,15 @@ export function findCommandStarts(command: string): Map<number, number> {
         continuesCommand = false;
         continue;
       }
-      // A comment runs to the end of its line, whatever its text ends with;
-      // the newline itself is left to separate on the next turn.
+      // A comment runs to the end of its line, whatever its text ends with,
+      // so its newline separates even after a backslash: that backslash is
+      // part of the comment, not an escape.
       if (opensCommentAt(command, i)) {
         const newline = command.indexOf("\n", i);
-        i = newline === -1 ? command.length : newline - 1;
+        i = newline === -1 ? command.length : newline;
+        atStart = true;
+        inAssignment = false;
+        continuesCommand = false;
         continue;
       }
       // A continuation is blank space: its newline is read as whitespace on
