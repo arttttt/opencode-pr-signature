@@ -974,6 +974,13 @@ describe("commands inside substitutions", () => {
     );
   });
 
+  test.each([
+    "cat <<'EOF'\n`echo \\`gh pr create --body hello\\``\nEOF",
+    "cat <<'EOF'\n`echo \\`git commit -m hello\\``\nEOF",
+  ])("leaves an escaped-backtick example in a heredoc body alone: %s", async (command) => {
+    expect(await sign(command)).toBe(command);
+  });
+
   test("leaves an escaped-backtick example quoted inside $( ) alone", async () => {
     const command = "echo \"$(printf '%s' '`echo \\`gh pr create --body hello\\``')\"";
 

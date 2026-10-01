@@ -751,7 +751,9 @@ export function rewriteInNestedBackticks(command: string, rewrite: (command: str
   const rewritten = rewrite(command);
   if (rewritten !== command) return rewritten;
 
-  for (const { start, end } of collectSubstitutions(command)) {
+  // Heredoc bodies are text, as they are to every other scan: a quoted one
+  // may well spell out a backtick example that nothing runs.
+  for (const { start, end } of collectSubstitutions(maskHeredocBodies(command))) {
     if (command[start] !== "`") continue;
     const body = command.slice(start + 1, end - 1);
     if (!body.includes("\\`")) continue;
