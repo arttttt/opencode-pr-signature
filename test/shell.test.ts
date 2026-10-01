@@ -270,6 +270,12 @@ describe("findLineEnd", () => {
     expect(findLineEnd(command, 0)).toBe(command.lastIndexOf("\n"));
   });
 
+  test("ends at a comment's newline even when the comment ends in a backslash", () => {
+    const command = "git commit -F - # note \\\ncat";
+
+    expect(findLineEnd(command, 0)).toBe(command.indexOf("\n"));
+  });
+
   test("is the length of the command when no line ends", () => {
     expect(findLineEnd("a \\\n b", 0)).toBe(6);
   });

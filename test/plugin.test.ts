@@ -889,6 +889,14 @@ describe("a continuation at the end of a command", () => {
     expect(await sign(command)).toBe(`git commit -m hello -m '${signature}'`);
   });
 
+  test("does not sign another command's heredoc after a comment that ends in a backslash", async () => {
+    const command = "printf hello | git commit -F - # note \\\ncat <<EOF\nunrelated\nEOF";
+    const rewritten = await sign(command);
+
+    expect(rewritten.endsWith("cat <<EOF\nunrelated\nEOF")).toBe(true);
+    expect(rewritten.startsWith("printf hello | git commit -F - # note")).toBe(false);
+  });
+
   test("signs a heredoc message whose header sits on a continued line", async () => {
     const command = "git commit -F - \\\n  <<EOF\nsubject\nEOF";
 

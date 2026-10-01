@@ -615,12 +615,17 @@ export function trimEndContinuation(command: string): string {
 
 /**
  * The index of the first newline at or after index that ends its line, or the
- * length of the command when none does. A newline a backslash escapes is not
- * the end of the line.
+ * length of the command when none does. A newline a backslash escapes does not
+ * end the line, but a comment's does: its backslash escapes nothing.
  */
 export function findLineEnd(command: string, index: number): number {
-  for (let i = command.indexOf("\n", index); i !== -1; i = command.indexOf("\n", i + 1)) {
-    if (!isEscapedAt(command, i)) return i;
+  for (let i = index; i < command.length; i++) {
+    if (command[i] === "\\") i++;
+    else if (command[i] === "\n") return i;
+    else if (opensCommentAt(command, i)) {
+      const newline = command.indexOf("\n", i);
+      return newline === -1 ? command.length : newline;
+    }
   }
   return command.length;
 }
