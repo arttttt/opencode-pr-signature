@@ -1048,6 +1048,43 @@ describe("ANSI-C quoting", () => {
   });
 });
 
+// String checks say what the rewrite looks like; these say what the shell
+// makes of it, which is what the escaping in these shapes is all about.
+describe("rewritten tricky commands, run for real", () => {
+  test.each([
+    ["a body continued across lines", "gh pr create \\\n  --title t \\\n  --body hello", "hello"],
+    ["a command after a continued &&", "true && \\\n  gh pr create --body hello", "hello"],
+    ["a body in escaped backticks nested in backticks", "echo `echo \\`gh pr create --body hello\\``", "hello"],
+    ["an ANSI-C quoted body", "gh pr create --body $'a\\'b'", "a'b"],
+    ["a body next to a substitution quoting on its own", `gh pr create --title "$(printf '%s' "it's")" --body hello`, "hello"],
+  ])("gh receives the signed body: %s", async (_, command, body) => {
+    expect((await runGh(await sign(command))).body).toBe(`${body}\n\n${signature}`);
+  });
+
+  test("gh receives the signed dynamic body from escaped backticks nested in backticks", async () => {
+    const command = 'echo `echo \\`gh pr create --body "$PR_BODY"\\``';
+    const { body } = await runGh(`PR_BODY='from a variable'; ${await sign(command)}`);
+
+    expect(body).toBe(`from a variable\n\n${signature}`);
+  });
+
+  test("leaves a gh command with an unclosed quote as written", async () => {
+    const command = "gh pr create --title 'unfinished --body hello";
+
+    expect(await sign(command)).toBe(command);
+  });
+
+  test.each([
+    ["continued after the subcommand", "git commit \\\n  -m hello", "hello"],
+    ["with a message substitution quoting on its own", `git commit -m "$(printf '%s' "it's")"`, "it's"],
+    // git's cleanup strips the trailing space itself; what matters is that
+    // the signature arrives as its own -m, not glued to the message word.
+    ["with a trailing escaped space in the message", "git commit -m hello\\ ", "hello"],
+  ])("git stores the signed message: %s", async (_, command, message) => {
+    expect((await signAndCommit(command)).message).toBe(`${message}\n\n${signature}\n\n`);
+  });
+});
+
 describe("one line carrying both a commit and a pull request", () => {
   test("signs the commit and the pull request body", async () => {
     const rewritten = await sign('git commit -m "subject" && gh pr create --title t --body "hello"');
