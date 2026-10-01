@@ -385,7 +385,7 @@ export function findCommandStarts(command: string): Map<number, number> {
 
     // `GIT_COMMITTER_DATE=… git commit …`: an assignment prefix leaves the
     // word after it still in command position, and part of the same command.
-    if (inAssignment && !inSingleQuote && !inDoubleQuote && /\s/.test(char)) {
+    if (inAssignment && !inSingleQuote && !inDoubleQuote && /\s/.test(char) && !isEscapedAt(command, i)) {
       atStart = true;
       inAssignment = false;
       continuesCommand = true;
@@ -653,10 +653,16 @@ export function hasPrecedingPipe(command: string, startIndex: number): boolean {
  * Drop the trailing blank space of a command, line continuations included.
  *
  * Text appended after a dangling `\<newline>` would sit behind its backslash,
- * which then escapes the space and fuses ` --body` into one stray token.
+ * which then escapes the space and fuses ` --body` into one stray token. An
+ * escaped blank is part of the last word, so it stays.
  */
 export function trimEndContinuation(command: string): string {
-  return command.replace(/(?:\\\n\s*)+$/, "").trimEnd();
+  let end = command.length;
+  for (;;) {
+    if (end >= 2 && isContinuationAt(command, end - 2)) end -= 2;
+    else if (end >= 1 && /\s/.test(command[end - 1]) && !isEscapedAt(command, end - 1)) end--;
+    else return command.slice(0, end);
+  }
 }
 
 /**

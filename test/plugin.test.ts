@@ -953,6 +953,18 @@ describe("a continuation at the end of a command", () => {
     expect(rewritten.startsWith("printf hello | git commit -F - # note")).toBe(false);
   });
 
+  test("keeps a trailing escaped space in the last word when adding a body", async () => {
+    const command = "gh pr create --title t\\ ";
+
+    expect(await sign(command)).toBe(`gh pr create --title t\\  --body '${signature}'`);
+  });
+
+  test("signs a gh command behind an assignment continued across lines", async () => {
+    const command = "FOO=val\\\nue gh pr create --body hello";
+
+    expect(await sign(command)).toBe(`FOO=val\\\nue gh pr create --body 'hello\n\n${signature}'`);
+  });
+
   test("signs a heredoc message whose header sits on a continued line", async () => {
     const command = "git commit -F - \\\n  <<EOF\nsubject\nEOF";
 

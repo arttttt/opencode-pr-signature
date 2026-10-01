@@ -263,6 +263,14 @@ describe("trimEndContinuation", () => {
     expect(trimEndContinuation("gh pr create \\\n  \\\n")).toBe("gh pr create");
   });
 
+  test("keeps an escaped blank, which belongs to the last word", () => {
+    expect(trimEndContinuation("gh pr create --title t\\ ")).toBe("gh pr create --title t\\ ");
+  });
+
+  test("drops a continuation but not a literal backslash before a newline", () => {
+    expect(trimEndContinuation("echo a\\\\\n")).toBe("echo a\\\\");
+  });
+
   test("leaves a command that ends in a plain word alone", () => {
     expect(trimEndContinuation("git commit -m x  ")).toBe("git commit -m x");
   });
@@ -283,5 +291,13 @@ describe("findLineEnd", () => {
 
   test("is the length of the command when no line ends", () => {
     expect(findLineEnd("a \\\n b", 0)).toBe(6);
+  });
+});
+
+describe("findCommandStarts with an assignment prefix", () => {
+  test("a continuation inside the assignment does not end it", () => {
+    const command = "FOO=val\\\nue gh pr create";
+
+    expect([...findCommandStarts(command).keys()]).toEqual([0, command.indexOf("gh")]);
   });
 });
