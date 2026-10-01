@@ -202,6 +202,29 @@ function isEscapedAt(command: string, index: number): boolean {
 }
 
 /**
+ * Whether the quote character at index opens or closes a quote of its own kind.
+ *
+ * Single quotes have no escapes at all: a backslash inside them is a letter,
+ * so `'a\'` is closed. Double quotes honour one, decided by the parity of the
+ * backslash run, so `"a\\"` is closed and `"a\""` is not.
+ */
+function togglesQuote(command: string, index: number, inSingleQuote: boolean, inDoubleQuote: boolean): boolean {
+  const char = command[index];
+  if (char === "'") return inSingleQuote || (!inDoubleQuote && !isEscapedAt(command, index));
+  if (char === '"') return !inSingleQuote && !isEscapedAt(command, index);
+  return false;
+}
+
+/**
+ * Whether a `#` at index opens a comment: only at the start of a word, and an
+ * escaped space does not end the word before it.
+ */
+function opensCommentAt(command: string, index: number): boolean {
+  if (command[index] !== "#") return false;
+  return index === 0 || (/\s/.test(command[index - 1]) && !isEscapedAt(command, index - 1));
+}
+
+/**
  * Whether a line continuation — a backslash that escapes a newline — starts at
  * index. The shell deletes the pair before it reads anything, so to a scanner
  * it is neither a word nor a separator, only a place the line breaks.
@@ -252,12 +275,10 @@ export function findCommandStarts(command: string): Map<number, number> {
 
   for (let i = 0; i < command.length; i++) {
     const char = command[i];
-    const prevChar = i > 0 ? command[i - 1] : "";
 
-    if (char === "'" && !inDoubleQuote && prevChar !== "\\") {
-      inSingleQuote = !inSingleQuote;
-    } else if (char === '"' && !inSingleQuote && prevChar !== "\\") {
-      inDoubleQuote = !inDoubleQuote;
+    if (togglesQuote(command, i, inSingleQuote, inDoubleQuote)) {
+      if (char === "'") inSingleQuote = !inSingleQuote;
+      else inDoubleQuote = !inDoubleQuote;
     } else if (!inSingleQuote && !inDoubleQuote) {
       const afterExpansion = skipCommandSubstitution(command, i);
       if (afterExpansion !== -1) {
@@ -283,6 +304,13 @@ export function findCommandStarts(command: string): Map<number, number> {
         atStart = true;
         inAssignment = false;
         continuesCommand = false;
+        continue;
+      }
+      // A comment runs to the end of its line, whatever its text ends with;
+      // the newline itself is left to separate on the next turn.
+      if (opensCommentAt(command, i)) {
+        const newline = command.indexOf("\n", i);
+        i = newline === -1 ? command.length : newline - 1;
         continue;
       }
       // A continuation is blank space: its newline is read as whitespace on
@@ -439,13 +467,10 @@ export function findCommandEndIndex(command: string, startIndex: number): number
 
   while (i < command.length) {
     const char = command[i];
-    const prevChar = i > 0 ? command[i - 1] : "";
 
-    // Handle quote toggling (ignore escaped quotes)
-    if (char === "'" && !inDoubleQuote && prevChar !== "\\") {
-      inSingleQuote = !inSingleQuote;
-    } else if (char === '"' && !inSingleQuote && prevChar !== "\\") {
-      inDoubleQuote = !inDoubleQuote;
+    if (togglesQuote(command, i, inSingleQuote, inDoubleQuote)) {
+      if (char === "'") inSingleQuote = !inSingleQuote;
+      else inDoubleQuote = !inDoubleQuote;
     } else if (!inSingleQuote && !inDoubleQuote) {
       const afterExpansion = skipCommandSubstitution(command, i);
       if (afterExpansion !== -1) {
@@ -454,7 +479,7 @@ export function findCommandEndIndex(command: string, startIndex: number): number
       }
       // A `#` opens a comment that would swallow anything appended after it.
       if (isSeparatorAt(command, i)) return i;
-      if (char === "#" && (i === startIndex || /\s/.test(prevChar))) return i;
+      if (i === startIndex ? char === "#" : opensCommentAt(command, i)) return i;
     }
     i++;
   }
@@ -489,14 +514,10 @@ export function findStdinRedirect(command: string): StdinRedirect {
 
   for (let i = 0; i < command.length; i++) {
     const char = command[i];
-    const prevChar = i > 0 ? command[i - 1] : "";
 
-    if (char === "'" && !inDoubleQuote && prevChar !== "\\") {
-      inSingleQuote = !inSingleQuote;
-      continue;
-    }
-    if (char === '"' && !inSingleQuote && prevChar !== "\\") {
-      inDoubleQuote = !inDoubleQuote;
+    if (togglesQuote(command, i, inSingleQuote, inDoubleQuote)) {
+      if (char === "'") inSingleQuote = !inSingleQuote;
+      else inDoubleQuote = !inDoubleQuote;
       continue;
     }
     if (inSingleQuote || inDoubleQuote) continue;

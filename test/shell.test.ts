@@ -192,3 +192,55 @@ describe("findCommandStarts across a line continuation", () => {
     expect(findCommandStarts(command).has(command.indexOf("\\"))).toBe(false);
   });
 });
+
+describe("quotes and backslashes", () => {
+  test("a single quote closes at the quote even after a backslash, which is literal there", () => {
+    const command = String.raw`git commit -m 'a\'; echo done`;
+
+    expect(findCommandEndIndex(command, 0)).toBe(command.indexOf(";"));
+  });
+
+  test("a double quote after an even run of backslashes is a real quote", () => {
+    const command = String.raw`git commit -m "a\\"; echo done`;
+
+    expect(findCommandEndIndex(command, 0)).toBe(command.indexOf(";"));
+  });
+
+  test("a double quote after an odd run of backslashes stays part of the text", () => {
+    const command = String.raw`git commit -m "a\"; echo"`;
+
+    expect(findCommandEndIndex(command, 0)).toBe(command.length);
+  });
+
+  test("finds the command after a quote that ends in a backslash", () => {
+    const command = String.raw`echo '\' ; gh pr create`;
+
+    expect(findCommandStarts(command).has(command.indexOf("gh"))).toBe(true);
+  });
+});
+
+describe("comments", () => {
+  test("a comment ends at its newline even when its text ends in a backslash", () => {
+    const command = "# note \\\ngh pr create";
+
+    expect(findCommandStarts(command).has(command.indexOf("gh"))).toBe(true);
+  });
+
+  test("nothing after a comment opener starts a command", () => {
+    const command = "echo before # note; gh pr create";
+
+    expect(findCommandStarts(command).has(command.indexOf("gh"))).toBe(false);
+  });
+
+  test("a # after an escaped space belongs to the word", () => {
+    const command = String.raw`git commit -m a\ #b -m c`;
+
+    expect(findCommandEndIndex(command, 0)).toBe(command.length);
+  });
+
+  test("a # inside a word is not a comment", () => {
+    const command = "git commit -m a#b; echo";
+
+    expect(findCommandEndIndex(command, 0)).toBe(command.indexOf(";"));
+  });
+});

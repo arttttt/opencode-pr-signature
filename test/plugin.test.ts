@@ -796,6 +796,52 @@ describe("commands continued across lines", () => {
   });
 });
 
+describe("backslashes, quotes and comments around a command", () => {
+  const body = (text: string) => `'${text}\n\n${signature}'`;
+
+  test("signs the command on the line after a comment that ends in a backslash", async () => {
+    const command = "# note \\\ngh pr create --body hello";
+
+    expect(await sign(command)).toBe(`# note \\\ngh pr create --body ${body("hello")}`);
+  });
+
+  test("leaves a gh command that only appears in a comment alone", async () => {
+    const command = "echo before # ; gh pr create --body hello";
+
+    expect(await sign(command)).toBe(command);
+  });
+
+  test("signs a message whose # follows an escaped space", async () => {
+    const command = String.raw`git commit -m a\ #b`;
+
+    expect(await sign(command)).toBe(String.raw`git commit -m a\ #b -m '${signature}'`);
+  });
+
+  test("puts the signature before a separator that follows a double quote ending in backslashes", async () => {
+    const command = String.raw`git commit -m "a\\"; echo done`;
+
+    expect(await sign(command)).toBe(String.raw`git commit -m "a\\" -m '${signature}' ; echo done`);
+  });
+
+  test("puts the signature before a separator that follows a single quote ending in a backslash", async () => {
+    const command = String.raw`git commit -m 'a\'; echo done`;
+
+    expect(await sign(command)).toBe(String.raw`git commit -m 'a\' -m '${signature}' ; echo done`);
+  });
+
+  test("signs a commit that comes after a quote ending in backslashes", async () => {
+    const command = String.raw`echo "a\\"; git commit -m x`;
+
+    expect(await sign(command)).toBe(String.raw`echo "a\\"; git commit -m x -m '${signature}'`);
+  });
+
+  test("still sees a stdin redirect that follows a quote ending in backslashes", async () => {
+    const command = String.raw`git commit -F msg.txt "\\" < other.txt`;
+
+    expect(await sign(command)).toBe(command);
+  });
+});
+
 describe("one line carrying both a commit and a pull request", () => {
   test("signs the commit and the pull request body", async () => {
     const rewritten = await sign('git commit -m "subject" && gh pr create --title t --body "hello"');
