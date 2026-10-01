@@ -219,12 +219,37 @@ function togglesQuote(command: string, index: number, inSingleQuote: boolean, in
 }
 
 /**
- * Whether a `#` at index opens a comment: only at the start of a word, and an
- * escaped space does not end the word before it.
+ * Whether index sits inside a backtick substitution: an odd number of
+ * unescaped backticks precede it, not counting those in single quotes.
+ */
+function insideBacktickAt(command: string, index: number): boolean {
+  let inside = false;
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  for (let i = 0; i < index; i++) {
+    if (togglesQuote(command, i, inSingleQuote, inDoubleQuote)) {
+      if (command[i] === "'") inSingleQuote = !inSingleQuote;
+      else inDoubleQuote = !inDoubleQuote;
+    } else if (command[i] === "`" && !inSingleQuote && !isEscapedAt(command, i)) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+/**
+ * Whether a `#` at index opens a comment: only where a word begins, which is
+ * after a blank (space or tab, not any whitespace), a newline or an operator.
+ * An escaped blank does not end the word before it; a continuation is deleted
+ * before the shell looks, so it is seen through.
  */
 function opensCommentAt(command: string, index: number): boolean {
   if (command[index] !== "#") return false;
-  return index === 0 || (/\s/.test(command[index - 1]) && !isEscapedAt(command, index - 1));
+  let before = index - 1;
+  while (before >= 1 && command[before] === "\n" && command[before - 1] === "\\" && !isEscapedAt(command, before - 1)) {
+    before -= 2;
+  }
+  return before < 0 || (/[ \t\n;&|()]/.test(command[before]) && !isEscapedAt(command, before));
 }
 
 /**
@@ -486,6 +511,7 @@ export function findCommandEndIndex(command: string, startIndex: number): number
   let inSingleQuote = false;
   let inDoubleQuote = false;
   let i = startIndex;
+  const inBacktick = insideBacktickAt(command, startIndex);
 
   while (i < command.length) {
     const char = command[i];
@@ -494,13 +520,15 @@ export function findCommandEndIndex(command: string, startIndex: number): number
       if (char === "'") inSingleQuote = !inSingleQuote;
       else inDoubleQuote = !inDoubleQuote;
     } else if (!inSingleQuote && !inDoubleQuote) {
+      // Inside a backtick substitution the next backtick closes it; it cannot
+      // open a nested one, which would have to be escaped. Like `)`, it is
+      // where the command ends.
+      if (char === "`" && inBacktick) return i;
       const afterExpansion = skipCommandSubstitution(command, i);
       if (afterExpansion !== -1) {
         i = afterExpansion;
         continue;
       }
-      // A backtick that opens nothing closes the substitution this command
-      // sits in; like `)`, it is where the command ends.
       if (char === "`" && !isEscapedAt(command, i)) return i;
       // A `#` opens a comment that would swallow anything appended after it.
       if (isSeparatorAt(command, i)) return i;
@@ -705,6 +733,7 @@ export function readShellWord(command: string, startIndex: number): ShellWord | 
   let value = "";
   let quote: "'" | '"' | undefined;
   let i = start;
+  const inBacktick = insideBacktickAt(command, start);
 
   while (i < command.length) {
     const char = command[i];
@@ -724,6 +753,8 @@ export function readShellWord(command: string, startIndex: number): ShellWord | 
       i++;
       continue;
     }
+
+    if (char === "`" && inBacktick) break;
 
     const afterExpansion = skipCommandSubstitution(command, i);
     if (afterExpansion !== -1) {

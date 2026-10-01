@@ -817,6 +817,24 @@ describe("backslashes, quotes and comments around a command", () => {
     expect(await sign(command)).toBe(`echo before # foo \\\ngit commit -m hello -m '${signature}'`);
   });
 
+  test("a # after a carriage return belongs to the word, so the gh after the semicolon is signed", async () => {
+    const command = "echo x\r#tag; gh pr create --body hello";
+
+    expect(await sign(command)).toBe(`echo x\r#tag; gh pr create --body ${body("hello")}`);
+  });
+
+  test("a # right after an operator opens a comment", async () => {
+    const command = "echo a;# gh pr create --body hello";
+
+    expect(await sign(command)).toBe(command);
+  });
+
+  test("a # after a continuation that follows a blank opens a comment", async () => {
+    const command = "echo a \\\n# ; gh pr create --body hello";
+
+    expect(await sign(command)).toBe(command);
+  });
+
   test("leaves a gh command that only appears in a comment alone", async () => {
     const command = "echo before # ; gh pr create --body hello";
 
@@ -867,6 +885,18 @@ describe("commands inside substitutions", () => {
     const command = 'echo "$(gh pr create --body hello)"; echo after';
 
     expect(await sign(command)).toBe(`echo "$(gh pr create --body ${body("hello")})"; echo after`);
+  });
+
+  test("signs a gh body in one of several backtick substitutions in double quotes", async () => {
+    const command = 'echo "`gh pr create --body hello` `printf other`"';
+
+    expect(await sign(command)).toBe(`echo "\`gh pr create --body ${body("hello")}\` \`printf other\`"`);
+  });
+
+  test("signs a gh body in backticks that is followed by a quoted backtick", async () => {
+    const command = "echo `gh pr create --body hello`; echo 'literal `text`'";
+
+    expect(await sign(command)).toBe(`echo \`gh pr create --body ${body("hello")}\`; echo 'literal \`text\`'`);
   });
 
   test("leaves a gh command alone when its $( is escaped inside double quotes", async () => {
