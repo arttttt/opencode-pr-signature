@@ -8,6 +8,7 @@ import {
   attachedValue,
   findCommandEndIndex,
   findInvocation,
+  hasUnclosedQuote,
   maskHeredocBodies,
   quoteShellArgument,
   readShellWord,
@@ -129,6 +130,7 @@ export function addSignatureToGhCommand(command: string, signature: string): str
   // A heredoc inside the gh command itself (--body-file -, an inline body)
   // carries text we would have to read to append to it. Leave it alone.
   if (scan.slice(startIndex, endIndex) !== commandPart) return command;
+  if (hasUnclosedQuote(commandPart)) return command;
 
   const body = findGhBodyOption(commandPart);
 

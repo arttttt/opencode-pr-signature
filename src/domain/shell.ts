@@ -219,6 +219,26 @@ function togglesQuote(command: string, index: number, inSingleQuote: boolean, in
 }
 
 /**
+ * Whether a quote opened in the text is never closed. Such text is not a
+ * command the shell would run, so it is no place to append anything.
+ */
+export function hasUnclosedQuote(text: string): boolean {
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  for (let i = 0; i < text.length; i++) {
+    if (togglesQuote(text, i, inSingleQuote, inDoubleQuote)) {
+      if (text[i] === "'") inSingleQuote = !inSingleQuote;
+      else inDoubleQuote = !inDoubleQuote;
+      continue;
+    }
+    // A substitution quotes on its own: `"$(printf '%s' "it's")"` is closed.
+    const afterExpansion = inSingleQuote ? -1 : skipCommandSubstitution(text, i);
+    if (afterExpansion !== -1) i = afterExpansion - 1;
+  }
+  return inSingleQuote || inDoubleQuote;
+}
+
+/**
  * Whether index sits inside a backtick substitution: an odd number of
  * unescaped backticks precede it, not counting those in single quotes, in
  * comments, or in a `$(…)` that is already closed. A `$(…)` the index sits in
@@ -534,14 +554,16 @@ export function findCommandEndIndex(command: string, startIndex: number): number
   while (i < command.length) {
     const char = command[i];
 
+    // Inside a backtick substitution the next unescaped backtick closes it,
+    // even within quotes: the shell finds the closing backtick before it
+    // reads any quoting. A nested one would have to be escaped. Like `)`, it
+    // is where the command ends.
+    if (char === "`" && inBacktick && !isEscapedAt(command, i)) return i;
+
     if (togglesQuote(command, i, inSingleQuote, inDoubleQuote)) {
       if (char === "'") inSingleQuote = !inSingleQuote;
       else inDoubleQuote = !inDoubleQuote;
     } else if (!inSingleQuote && !inDoubleQuote) {
-      // Inside a backtick substitution the next backtick closes it; it cannot
-      // open a nested one, which would have to be escaped. Like `)`, it is
-      // where the command ends.
-      if (char === "`" && inBacktick) return i;
       const afterExpansion = skipCommandSubstitution(command, i);
       if (afterExpansion !== -1) {
         i = afterExpansion;
@@ -551,6 +573,13 @@ export function findCommandEndIndex(command: string, startIndex: number): number
       // A `#` opens a comment that would swallow anything appended after it.
       if (isSeparatorAt(command, i)) return i;
       if (i === startIndex ? char === "#" : opensCommentAt(command, i)) return i;
+    } else if (inDoubleQuote) {
+      // Double quotes still expand `$(…)`, whose own quotes are its business.
+      const afterExpansion = skipCommandSubstitution(command, i);
+      if (afterExpansion !== -1) {
+        i = afterExpansion;
+        continue;
+      }
     }
     i++;
   }
@@ -591,13 +620,15 @@ export function findStdinRedirect(command: string): StdinRedirect {
       else inDoubleQuote = !inDoubleQuote;
       continue;
     }
-    if (inSingleQuote || inDoubleQuote) continue;
+    if (inSingleQuote) continue;
 
+    // Double quotes still expand `$(…)`, whose own quotes are its business.
     const afterExpansion = skipCommandSubstitution(command, i);
     if (afterExpansion !== -1) {
       i = afterExpansion - 1;
       continue;
     }
+    if (inDoubleQuote) continue;
     if (char !== "<") continue;
 
     // A digit run immediately before `<` is a file descriptor only when it
@@ -761,6 +792,16 @@ export function readShellWord(command: string, startIndex: number): ShellWord | 
 
   while (i < command.length) {
     const char = command[i];
+    if (char === "`" && inBacktick && !isEscapedAt(command, i)) break;
+    if (quote === '"') {
+      // Double quotes still expand `$(…)`, whose own quotes are its business.
+      const afterExpansion = skipCommandSubstitution(command, i);
+      if (afterExpansion !== -1) {
+        value += command.slice(i, afterExpansion);
+        i = afterExpansion;
+        continue;
+      }
+    }
     if (quote) {
       if (char === quote) {
         quote = undefined;
@@ -777,8 +818,6 @@ export function readShellWord(command: string, startIndex: number): ShellWord | 
       i++;
       continue;
     }
-
-    if (char === "`" && inBacktick) break;
 
     const afterExpansion = skipCommandSubstitution(command, i);
     if (afterExpansion !== -1) {

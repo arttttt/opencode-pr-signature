@@ -13,6 +13,7 @@ import {
   findCommandStarts,
   findInvocation,
   findLineEnd,
+  hasUnclosedQuote,
   readShellWord,
   skipLeadingOptions,
   trimEndContinuation,
@@ -299,5 +300,28 @@ describe("findCommandStarts with an assignment prefix", () => {
     const command = "FOO=val\\\nue gh pr create";
 
     expect([...findCommandStarts(command).keys()]).toEqual([0, command.indexOf("gh")]);
+  });
+});
+
+describe("hasUnclosedQuote", () => {
+  test.each([
+    [`git commit -m "$(printf '%s' "it's")"`, false],
+    ["git commit -m 'a\\'", false],
+    ['git commit -m "a\\"', true],
+    ["gh pr create --title '", true],
+  ])("%s → %p", (text, unclosed) => {
+    expect(hasUnclosedQuote(text)).toBe(unclosed);
+  });
+});
+
+describe("substitutions inside double quotes", () => {
+  const command = `git commit -m "$(printf '%s' "it's")"; echo done`;
+
+  test("readShellWord carries the substitution whole", () => {
+    expect(readShellWord(command, command.indexOf('"'))?.raw).toBe(`"$(printf '%s' "it's")"`);
+  });
+
+  test("findCommandEndIndex is not thrown off by the quotes inside it", () => {
+    expect(findCommandEndIndex(command, 0)).toBe(command.indexOf(";"));
   });
 });

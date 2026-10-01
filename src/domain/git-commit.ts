@@ -13,6 +13,7 @@ import {
   findLineEnd,
   findStdinRedirect,
   hasPrecedingPipe,
+  hasUnclosedQuote,
   hasUnquotedGlob,
   maskHeredocBodies,
   quoteShellArgument,
@@ -352,6 +353,7 @@ export function addSignatureToGitCommitCommand(command: string, signature: strin
   const gitCommitStart = invocation.start;
   const endIndex = findCommandEndIndex(scan, gitCommitStart);
   const commandPart = command.slice(gitCommitStart, endIndex);
+  if (hasUnclosedQuote(scan.slice(gitCommitStart, endIndex))) return command;
   // Past the subcommand: git's own options are not the commit's, and `-C`
   // means a different thing on each side of it.
   const source = findCommitMessageSource(scan.slice(gitCommitStart, endIndex), invocation.end - gitCommitStart);

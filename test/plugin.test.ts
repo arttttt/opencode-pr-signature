@@ -829,6 +829,23 @@ describe("backslashes, quotes and comments around a command", () => {
     expect(await sign(command)).toBe(command);
   });
 
+  test("leaves a line alone when a comment right after && leaves the operator dangling", async () => {
+    const command = "echo before &&# x ; gh pr create --body hello";
+
+    expect(await sign(command)).toBe(command);
+  });
+
+  // bash 3.2 runs a comment inside $( ) on past a trailing backslash and
+  // rejects this line whatever is done to it; zsh, dash and newer bash end the
+  // comment at its newline and run gh, so gh is signed.
+  test("signs the command after a comment ending in a backslash inside $( )", async () => {
+    const command = "echo $(echo before # foo \\\ngh pr create --body hello); echo after";
+
+    expect(await sign(command)).toBe(
+      `echo $(echo before # foo \\\ngh pr create --body 'hello\n\n${signature}'); echo after`,
+    );
+  });
+
   test("a # right after an operator opens a comment", async () => {
     const command = "echo a;# gh pr create --body hello";
 
@@ -923,6 +940,24 @@ describe("commands inside substitutions", () => {
     const command = "a=`git commit -m x`; b=`echo y`";
 
     expect(await sign(command)).toBe(`a=\`git commit -m x -m '${signature}' \`; b=\`echo y\``);
+  });
+
+  test("leaves a backtick substitution alone when a quote inside it is cut by its closing backtick", async () => {
+    const command = "echo `gh pr create --title '`' --body hello`";
+
+    expect(await sign(command)).toBe(command);
+  });
+
+  test("still signs a message whose substitution quotes on its own", async () => {
+    const command = `git commit -m "$(printf '%s' "it's")"`;
+
+    expect(await sign(command)).toBe(`git commit -m "$(printf '%s' "it's")" -m '${signature}'`);
+  });
+
+  test("leaves a git commit with an unclosed quote alone", async () => {
+    const command = "echo `git commit -m '`' -m x`";
+
+    expect(await sign(command)).toBe(command);
   });
 
   test("leaves a gh command alone when its $( is escaped inside double quotes", async () => {
