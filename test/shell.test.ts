@@ -175,6 +175,10 @@ describe("readShellWord across a line continuation", () => {
     expect(readShellWord('"a\\\nb"', 0)?.value).toBe("ab");
   });
 
+  test("ends the word at a backtick that opens nothing", () => {
+    expect(readShellWord("hello`", 0)?.value).toBe("hello");
+  });
+
   test("keeps a continuation literal inside single quotes", () => {
     expect(readShellWord("'a\\\nb'", 0)?.value).toBe("a\\\nb");
   });
@@ -187,6 +191,7 @@ describe("readShellWord across a line continuation", () => {
     ['"a\\"b"', 'a"b'],
     ['"a\\\\b"', "a\\b"],
     ['"a\\$b"', "a$b"],
+    ['"a\\`b"', "a`b"],
   ])("still unescapes what double quotes do escape: %s", (raw, value) => {
     expect(readShellWord(raw, 0)?.value).toBe(value);
   });

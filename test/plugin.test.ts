@@ -823,6 +823,12 @@ describe("backslashes, quotes and comments around a command", () => {
     expect(await sign(command)).toBe(`echo x\r#tag; gh pr create --body ${body("hello")}`);
   });
 
+  test("leaves a command that only appears after a pipe in a comment alone", async () => {
+    const command = "echo # | gh pr create --body hello";
+
+    expect(await sign(command)).toBe(command);
+  });
+
   test("a # right after an operator opens a comment", async () => {
     const command = "echo a;# gh pr create --body hello";
 
@@ -911,6 +917,12 @@ describe("commands inside substitutions", () => {
     expect(await sign(command)).toBe(
       `echo "$(printf '%s' '\`')"; gh pr create --title \`printf t\` --body ${body("hello")}`,
     );
+  });
+
+  test("signs the commit in the first of two backtick substitutions on a line", async () => {
+    const command = "a=`git commit -m x`; b=`echo y`";
+
+    expect(await sign(command)).toBe(`a=\`git commit -m x -m '${signature}' \`; b=\`echo y\``);
   });
 
   test("leaves a gh command alone when its $( is escaped inside double quotes", async () => {
