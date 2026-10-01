@@ -8,6 +8,7 @@
 
 import { addSignatureToGhCommand } from "../domain/gh";
 import { addSignatureToGitCommitCommand } from "../domain/git-commit";
+import { rewriteInNestedBackticks } from "../domain/shell";
 import { generateSignature, hasSignature } from "../domain/signature";
 import type { ModelRegistry } from "./model-registry";
 
@@ -76,7 +77,9 @@ export function createSigner(registry: ModelRegistry): Signer {
       // what the previous one produced.
       const current = signature();
       let rewritten = command;
-      for (const addSignature of COMMAND_REWRITERS) rewritten = addSignature(rewritten, current);
+      for (const addSignature of COMMAND_REWRITERS) {
+        rewritten = rewriteInNestedBackticks(rewritten, (text) => addSignature(text, current));
+      }
       return rewritten;
     },
 

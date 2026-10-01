@@ -714,6 +714,54 @@ export function findLineEnd(command: string, index: number): number {
 }
 
 /**
+ * Apply rewrite to the command, or failing that, to a command nested inside
+ * escaped backticks.
+ *
+ * In `` echo `echo \`gh …\`` `` the inner gh is real, but its backticks are
+ * escaped one level, so a scan of the outer text cannot see it. Each backtick
+ * body that holds an escaped backtick is unescaped the way the shell does,
+ * rewritten as a command of its own, and escaped back. Only `\`, `` ` `` and
+ * `$` are escapes inside backticks; `\$` and `$` mean the same there, so the
+ * round trip changes no meaning.
+ */
+export function rewriteInNestedBackticks(command: string, rewrite: (command: string) => string): string {
+  const rewritten = rewrite(command);
+  if (rewritten !== command) return rewritten;
+
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i];
+    if (togglesQuote(command, i, inSingleQuote, inDoubleQuote)) {
+      if (char === "'") inSingleQuote = !inSingleQuote;
+      else inDoubleQuote = !inDoubleQuote;
+      continue;
+    }
+    if (inSingleQuote) continue;
+    if (!inDoubleQuote && opensCommentAt(command, i)) {
+      const newline = command.indexOf("\n", i);
+      if (newline === -1) break;
+      i = newline;
+      continue;
+    }
+    if (char !== "`") continue;
+
+    const end = skipCommandSubstitution(command, i);
+    if (end === -1) continue;
+    const body = command.slice(i + 1, end - 1);
+    if (body.includes("\\`")) {
+      const inner = body.replace(/\\([\\`$])/g, "$1");
+      const signed = rewriteInNestedBackticks(inner, rewrite);
+      if (signed !== inner) {
+        return command.slice(0, i + 1) + signed.replace(/[\\`]/g, "\\$&") + command.slice(end - 1);
+      }
+    }
+    i = end - 1;
+  }
+  return command;
+}
+
+/**
  * Wrap a value so the shell passes it through verbatim. Single quotes are the
  * only quoting in POSIX sh that suppresses every expansion, so an embedded
  * quote has to be closed, escaped and reopened.

@@ -15,6 +15,7 @@ import {
   findLineEnd,
   hasUnclosedQuote,
   readShellWord,
+  rewriteInNestedBackticks,
   skipLeadingOptions,
   trimEndContinuation,
 } from "../src/domain/shell";
@@ -323,5 +324,30 @@ describe("substitutions inside double quotes", () => {
 
   test("findCommandEndIndex is not thrown off by the quotes inside it", () => {
     expect(findCommandEndIndex(command, 0)).toBe(command.indexOf(";"));
+  });
+});
+
+describe("rewriteInNestedBackticks", () => {
+  const upper = (text: string) => text.replace("gh", "GH");
+
+  test("rewrites the outer command when the rewrite finds it there", () => {
+    expect(rewriteInNestedBackticks("gh x", upper)).toBe("GH x");
+  });
+
+  test("leaves a backtick body without escaped backticks to the outer rewrite", () => {
+    expect(rewriteInNestedBackticks("echo `true` ok", upper)).toBe("echo `true` ok");
+  });
+
+  // Like the real rewriters, these only see a substitution at their own level.
+  const nested = (text: string) => text.replace("`gh`", "`gh a\\b`");
+
+  test("unescapes, rewrites and re-escapes a nested body, backslashes included", () => {
+    expect(rewriteInNestedBackticks("echo `echo \\`gh\\``", nested)).toBe("echo `echo \\`gh a\\\\b\\``");
+  });
+
+  test("does not look inside single quotes", () => {
+    const command = "echo 'a `b \\`gh\\``'";
+
+    expect(rewriteInNestedBackticks(command, nested)).toBe(command);
   });
 });
