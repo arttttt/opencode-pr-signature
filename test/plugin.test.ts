@@ -1047,6 +1047,14 @@ describe("ANSI-C quoting", () => {
     expect(await sign(command)).toBe(`git commit -m hello --author $'O\\'Neil <x@y>' -m '${signature}'`);
   });
 
+  // bash reads $"…" as "…" translated, zsh as a literal $ before "…": the
+  // word is the same either way, and its $ hands the body to the shell.
+  test("hands a $\"…\" body to the shell to expand rather than reading it", async () => {
+    const { body } = await runGh(await sign('gh pr create --body $"a b"'));
+
+    expect(body).toBe(`a b\n\n${signature}`);
+  });
+
   test("hands a $'…' body to the shell to expand rather than reading it", async () => {
     const rewritten = await sign("gh pr create --body $'a\\nb'");
 
@@ -1089,6 +1097,22 @@ describe("rewritten tricky commands, run for real", () => {
     ["with a trailing escaped space in the message", "git commit -m hello\\ ", "hello"],
   ])("git stores the signed message: %s", async (_, command, message) => {
     expect((await signAndCommit(command)).message).toBe(`${message}\n\n${signature}\n\n`);
+  });
+});
+
+describe("comments before a heredoc", () => {
+  test("a quote inside a comment does not hide the heredoc body after it", async () => {
+    const command = "# it's a commit\ngit commit -F - <<'EOF'\nsubject; echo x && gh pr create --body y\nEOF";
+
+    expect(await sign(command)).toBe(
+      `# it's a commit\ngit commit -F - <<'EOF'\nsubject; echo x && gh pr create --body y\n\n${signature}\nEOF`,
+    );
+  });
+
+  test("a heredoc operator inside a comment opens no heredoc", async () => {
+    const command = "echo # <<EOF\ngh pr create --body hello";
+
+    expect(await sign(command)).toBe(`echo # <<EOF\ngh pr create --body 'hello\n\n${signature}'`);
   });
 });
 

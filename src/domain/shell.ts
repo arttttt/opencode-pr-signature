@@ -119,6 +119,13 @@ export function maskHeredocBodies(command: string): string {
       i = afterQuote;
       continue;
     }
+    // A comment's quotes and `<<` are text; its newline still ends the line.
+    if (opensCommentAt(command, i)) {
+      const newline = command.indexOf("\n", i);
+      if (newline === -1) break;
+      i = newline;
+      continue;
+    }
     if (char === "\\" && i + 1 < command.length) {
       i += 2;
       continue;
