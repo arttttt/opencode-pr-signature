@@ -684,6 +684,24 @@ describe("gh commands", () => {
     expect(await sign(command)).toBe(command);
   });
 
+  // A command split across lines with `\` continuations is still one command.
+  // Reading its first line break as its end spliced the signature into the
+  // middle and left gh a stray, space-prefixed `--body` to reject.
+  test("leaves a continued command with a body file alone", async () => {
+    const command = ["gh pr create --title t \\", "  --assignee me \\", "  --body-file msg.md"].join("\n");
+
+    expect(await sign(command)).toBe(command);
+  });
+
+  test("signs the body of a command continued across lines, in place", async () => {
+    const command = ["gh pr create --title t \\", "  --assignee me \\", "  --body hello"].join("\n");
+    const rewritten = await sign(command);
+
+    expect(rewritten).toBe(
+      ["gh pr create --title t \\", "  --assignee me \\", `  --body 'hello\n\n${signature}'`].join("\n"),
+    );
+  });
+
   test("evaluates the user's expression exactly once", async () => {
     const { body, directory } = await runGh(await sign('gh pr create --body "$(sh ./produce.sh)"'), {
       "produce.sh": 'echo call >> calls.log\nprintf "%s" "from a command"\n',
@@ -741,6 +759,360 @@ describe("gh commands", () => {
     ["a command that is only an argument", "echo gh -R owner/repo pr create --body hello"],
   ])("returns the command unchanged for %s", async (_name, command) => {
     expect(await sign(command)).toBe(command);
+  });
+});
+
+describe("commands continued across lines", () => {
+  const body = (text: string) => `'${text}\n\n${signature}'`;
+
+  test("signs a gh body whose option name follows the continuation", async () => {
+    const command = "gh pr create \\\n--body hello";
+
+    expect(await sign(command)).toBe(`gh pr create \\\n--body ${body("hello")}`);
+  });
+
+  test("signs a gh body whose value follows the continuation", async () => {
+    const command = "gh pr create --body \\\nhello";
+
+    expect(await sign(command)).toBe(`gh pr create --body ${body("hello")}`);
+  });
+
+  test("finds the command that follows a continuation after an operator", async () => {
+    const command = "echo before && \\\n  gh pr create --body hello";
+
+    expect(await sign(command)).toBe(`echo before && \\\n  gh pr create --body ${body("hello")}`);
+  });
+
+  test("signs a git commit continued after the subcommand", async () => {
+    const command = "git commit \\\n  -m hello";
+
+    expect(await sign(command)).toBe(`git commit \\\n  -m hello -m '${signature}'`);
+  });
+
+  test("signs a git commit that follows a continued &&", async () => {
+    const command = "git add . && \\\n  git commit -m hello";
+
+    expect(await sign(command)).toBe(`git add . && \\\n  git commit -m hello -m '${signature}'`);
+  });
+});
+
+describe("backslashes, quotes and comments around a command", () => {
+  const body = (text: string) => `'${text}\n\n${signature}'`;
+
+  test("signs the command on the line after a comment that ends in a backslash", async () => {
+    const command = "# note \\\ngh pr create --body hello";
+
+    expect(await sign(command)).toBe(`# note \\\ngh pr create --body ${body("hello")}`);
+  });
+
+  test("signs the next line's command after an inline comment that ends in a backslash", async () => {
+    const command = "echo before # foo \\\ngh pr create --body hello";
+
+    expect(await sign(command)).toBe(`echo before # foo \\\ngh pr create --body ${body("hello")}`);
+  });
+
+  test("signs a commit on the line after a comment that ends in a backslash", async () => {
+    const command = "echo before # foo \\\ngit commit -m hello";
+
+    expect(await sign(command)).toBe(`echo before # foo \\\ngit commit -m hello -m '${signature}'`);
+  });
+
+  test("a # after a carriage return belongs to the word, so the gh after the semicolon is signed", async () => {
+    const command = "echo x\r#tag; gh pr create --body hello";
+
+    expect(await sign(command)).toBe(`echo x\r#tag; gh pr create --body ${body("hello")}`);
+  });
+
+  test("leaves a command that only appears after a pipe in a comment alone", async () => {
+    const command = "echo # | gh pr create --body hello";
+
+    expect(await sign(command)).toBe(command);
+  });
+
+  test("leaves a line alone when a comment right after && leaves the operator dangling", async () => {
+    const command = "echo before &&# x ; gh pr create --body hello";
+
+    expect(await sign(command)).toBe(command);
+  });
+
+  // bash 3.2 runs a comment inside $( ) on past a trailing backslash and
+  // rejects this line whatever is done to it; zsh, dash and newer bash end the
+  // comment at its newline and run gh, so gh is signed.
+  test("signs the command after a comment ending in a backslash inside $( )", async () => {
+    const command = "echo $(echo before # foo \\\ngh pr create --body hello); echo after";
+
+    expect(await sign(command)).toBe(
+      `echo $(echo before # foo \\\ngh pr create --body 'hello\n\n${signature}'); echo after`,
+    );
+  });
+
+  test("a # right after an operator opens a comment", async () => {
+    const command = "echo a;# gh pr create --body hello";
+
+    expect(await sign(command)).toBe(command);
+  });
+
+  test("a # after a continuation that follows a blank opens a comment", async () => {
+    const command = "echo a \\\n# ; gh pr create --body hello";
+
+    expect(await sign(command)).toBe(command);
+  });
+
+  test("leaves a gh command that only appears in a comment alone", async () => {
+    const command = "echo before # ; gh pr create --body hello";
+
+    expect(await sign(command)).toBe(command);
+  });
+
+  test("signs a message whose # follows an escaped space", async () => {
+    const command = String.raw`git commit -m a\ #b`;
+
+    expect(await sign(command)).toBe(String.raw`git commit -m a\ #b -m '${signature}'`);
+  });
+
+  test("puts the signature before a separator that follows a double quote ending in backslashes", async () => {
+    const command = String.raw`git commit -m "a\\"; echo done`;
+
+    expect(await sign(command)).toBe(String.raw`git commit -m "a\\" -m '${signature}' ; echo done`);
+  });
+
+  test("puts the signature before a separator that follows a single quote ending in a backslash", async () => {
+    const command = String.raw`git commit -m 'a\'; echo done`;
+
+    expect(await sign(command)).toBe(String.raw`git commit -m 'a\' -m '${signature}' ; echo done`);
+  });
+
+  test("signs a commit that comes after a quote ending in backslashes", async () => {
+    const command = String.raw`echo "a\\"; git commit -m x`;
+
+    expect(await sign(command)).toBe(String.raw`echo "a\\"; git commit -m x -m '${signature}'`);
+  });
+
+  test("still sees a stdin redirect that follows a quote ending in backslashes", async () => {
+    const command = String.raw`git commit -F msg.txt "\\" < other.txt`;
+
+    expect(await sign(command)).toBe(command);
+  });
+});
+
+describe("commands inside substitutions", () => {
+  const body = (text: string) => `'${text}\n\n${signature}'`;
+
+  test("signs a gh body inside backticks without eating the closing backtick", async () => {
+    const command = "echo `gh pr create --body hello`; echo after";
+
+    expect(await sign(command)).toBe(`echo \`gh pr create --body ${body("hello")}\`; echo after`);
+  });
+
+  test("signs a gh command inside a substitution within double quotes", async () => {
+    const command = 'echo "$(gh pr create --body hello)"; echo after';
+
+    expect(await sign(command)).toBe(`echo "$(gh pr create --body ${body("hello")})"; echo after`);
+  });
+
+  test("signs a gh body in one of several backtick substitutions in double quotes", async () => {
+    const command = 'echo "`gh pr create --body hello` `printf other`"';
+
+    expect(await sign(command)).toBe(`echo "\`gh pr create --body ${body("hello")}\` \`printf other\`"`);
+  });
+
+  test("signs a gh body in backticks that is followed by a quoted backtick", async () => {
+    const command = "echo `gh pr create --body hello`; echo 'literal `text`'";
+
+    expect(await sign(command)).toBe(`echo \`gh pr create --body ${body("hello")}\`; echo 'literal \`text\`'`);
+  });
+
+  test("a backtick in an earlier comment does not make a later command look like it sits in backticks", async () => {
+    const command = "# literal `\ngh pr create --title `printf t` --body hello";
+
+    expect(await sign(command)).toBe(`# literal \`\ngh pr create --title \`printf t\` --body ${body("hello")}`);
+  });
+
+  test("a backtick quoted inside an earlier $( does not count either", async () => {
+    const command = `echo "$(printf '%s' '\`')"; gh pr create --title \`printf t\` --body hello`;
+
+    expect(await sign(command)).toBe(
+      `echo "$(printf '%s' '\`')"; gh pr create --title \`printf t\` --body ${body("hello")}`,
+    );
+  });
+
+  test("signs the commit in the first of two backtick substitutions on a line", async () => {
+    const command = "a=`git commit -m x`; b=`echo y`";
+
+    expect(await sign(command)).toBe(`a=\`git commit -m x -m '${signature}' \`; b=\`echo y\``);
+  });
+
+  test("leaves a backtick substitution alone when a quote inside it is cut by its closing backtick", async () => {
+    const command = "echo `gh pr create --title '`' --body hello`";
+
+    expect(await sign(command)).toBe(command);
+  });
+
+  test("still signs a message whose substitution quotes on its own", async () => {
+    const command = `git commit -m "$(printf '%s' "it's")"`;
+
+    expect(await sign(command)).toBe(`git commit -m "$(printf '%s' "it's")" -m '${signature}'`);
+  });
+
+  test("leaves a git commit with an unclosed quote alone", async () => {
+    const command = "echo `git commit -m '`' -m x`";
+
+    expect(await sign(command)).toBe(command);
+  });
+
+  test("signs a gh body inside escaped backticks nested in backticks", async () => {
+    const command = "echo `echo \\`gh pr create --body hello\\``";
+
+    expect(await sign(command)).toBe(`echo \`echo \\\`gh pr create --body ${body("hello")}\\\`\``);
+  });
+
+  test("signs a commit two levels of escaped backticks deep", async () => {
+    const command = "echo `echo \\`echo \\\\\\`git commit -m x\\\\\\`\\``";
+
+    expect(await sign(command)).toBe(
+      `echo \`echo \\\`echo \\\\\\\`git commit -m x -m '${signature}' \\\\\\\`\\\`\``,
+    );
+  });
+
+  test.each([
+    "cat <<'EOF'\n`echo \\`gh pr create --body hello\\``\nEOF",
+    "cat <<'EOF'\n`echo \\`git commit -m hello\\``\nEOF",
+  ])("leaves an escaped-backtick example in a heredoc body alone: %s", async (command) => {
+    expect(await sign(command)).toBe(command);
+  });
+
+  test("leaves an escaped-backtick example quoted inside $( ) alone", async () => {
+    const command = "echo \"$(printf '%s' '`echo \\`gh pr create --body hello\\``')\"";
+
+    expect(await sign(command)).toBe(command);
+  });
+
+  test("leaves a gh command alone when its $( is escaped inside double quotes", async () => {
+    const command = 'echo "\\$(gh pr create --body hello)"';
+
+    expect(await sign(command)).toBe(command);
+  });
+});
+
+describe("a continuation at the end of a command", () => {
+  test("adds a missing gh body after the continuation, not behind its backslash", async () => {
+    const command = "gh pr create --title t \\\n";
+
+    expect(await sign(command)).toBe(`gh pr create --title t --body '${signature}'`);
+  });
+
+  test("adds the signature to a git commit message after a trailing continuation", async () => {
+    const command = "git commit -m hello \\\n";
+
+    expect(await sign(command)).toBe(`git commit -m hello -m '${signature}'`);
+  });
+
+  test("does not sign another command's heredoc after a comment that ends in a backslash", async () => {
+    const command = "printf hello | git commit -F - # note \\\ncat <<EOF\nunrelated\nEOF";
+    const rewritten = await sign(command);
+
+    expect(rewritten.endsWith("cat <<EOF\nunrelated\nEOF")).toBe(true);
+    expect(rewritten.startsWith("printf hello | git commit -F - # note")).toBe(false);
+  });
+
+  test("keeps a trailing escaped space in the last word when adding a body", async () => {
+    const command = "gh pr create --title t\\ ";
+
+    expect(await sign(command)).toBe(`gh pr create --title t\\  --body '${signature}'`);
+  });
+
+  test("signs a gh command behind an assignment continued across lines", async () => {
+    const command = "FOO=val\\\nue gh pr create --body hello";
+
+    expect(await sign(command)).toBe(`FOO=val\\\nue gh pr create --body 'hello\n\n${signature}'`);
+  });
+
+  test("signs a heredoc message whose header sits on a continued line", async () => {
+    const command = "git commit -F - \\\n  <<EOF\nsubject\nEOF";
+
+    expect(await sign(command)).toBe(`git commit -F - \\\n  <<EOF\nsubject\n\n${signature}\nEOF`);
+  });
+});
+
+describe("ANSI-C quoting", () => {
+  test("signs a gh body next to a $'…' argument holding an escaped quote", async () => {
+    const command = "gh pr create --body hello --title $'don\\'t'";
+
+    expect(await sign(command)).toBe(`gh pr create --body 'hello\n\n${signature}' --title $'don\\'t'`);
+  });
+
+  test("signs a commit next to a $'…' argument holding an escaped quote", async () => {
+    const command = "git commit -m hello --author $'O\\'Neil <x@y>'";
+
+    expect(await sign(command)).toBe(`git commit -m hello --author $'O\\'Neil <x@y>' -m '${signature}'`);
+  });
+
+  // bash reads $"…" as "…" translated, zsh as a literal $ before "…": the
+  // word is the same either way, and its $ hands the body to the shell.
+  test("hands a $\"…\" body to the shell to expand rather than reading it", async () => {
+    const { body } = await runGh(await sign('gh pr create --body $"a b"'));
+
+    expect(body).toBe(`a b\n\n${signature}`);
+  });
+
+  test("hands a $'…' body to the shell to expand rather than reading it", async () => {
+    const rewritten = await sign("gh pr create --body $'a\\nb'");
+
+    expect(rewritten).toContain("$'a\\nb'");
+    expect(rewritten).toContain(signature);
+  });
+});
+
+// String checks say what the rewrite looks like; these say what the shell
+// makes of it, which is what the escaping in these shapes is all about.
+describe("rewritten tricky commands, run for real", () => {
+  test.each([
+    ["a body continued across lines", "gh pr create \\\n  --title t \\\n  --body hello", "hello"],
+    ["a command after a continued &&", "true && \\\n  gh pr create --body hello", "hello"],
+    ["a body in escaped backticks nested in backticks", "echo `echo \\`gh pr create --body hello\\``", "hello"],
+    ["an ANSI-C quoted body", "gh pr create --body $'a\\'b'", "a'b"],
+    ["a body next to a substitution quoting on its own", `gh pr create --title "$(printf '%s' "it's")" --body hello`, "hello"],
+  ])("gh receives the signed body: %s", async (_, command, body) => {
+    expect((await runGh(await sign(command))).body).toBe(`${body}\n\n${signature}`);
+  });
+
+  test("gh receives the signed dynamic body from escaped backticks nested in backticks", async () => {
+    const command = 'echo `echo \\`gh pr create --body "$PR_BODY"\\``';
+    const { body } = await runGh(`PR_BODY='from a variable'; ${await sign(command)}`);
+
+    expect(body).toBe(`from a variable\n\n${signature}`);
+  });
+
+  test("leaves a gh command with an unclosed quote as written", async () => {
+    const command = "gh pr create --title 'unfinished --body hello";
+
+    expect(await sign(command)).toBe(command);
+  });
+
+  test.each([
+    ["continued after the subcommand", "git commit \\\n  -m hello", "hello"],
+    ["with a message substitution quoting on its own", `git commit -m "$(printf '%s' "it's")"`, "it's"],
+    // git's cleanup strips the trailing space itself; what matters is that
+    // the signature arrives as its own -m, not glued to the message word.
+    ["with a trailing escaped space in the message", "git commit -m hello\\ ", "hello"],
+  ])("git stores the signed message: %s", async (_, command, message) => {
+    expect((await signAndCommit(command)).message).toBe(`${message}\n\n${signature}\n\n`);
+  });
+});
+
+describe("comments before a heredoc", () => {
+  test("a quote inside a comment does not hide the heredoc body after it", async () => {
+    const command = "# it's a commit\ngit commit -F - <<'EOF'\nsubject; echo x && gh pr create --body y\nEOF";
+
+    expect(await sign(command)).toBe(
+      `# it's a commit\ngit commit -F - <<'EOF'\nsubject; echo x && gh pr create --body y\n\n${signature}\nEOF`,
+    );
+  });
+
+  test("a heredoc operator inside a comment opens no heredoc", async () => {
+    const command = "echo # <<EOF\ngh pr create --body hello";
+
+    expect(await sign(command)).toBe(`echo # <<EOF\ngh pr create --body 'hello\n\n${signature}'`);
   });
 });
 

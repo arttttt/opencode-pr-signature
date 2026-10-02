@@ -10,14 +10,17 @@ import {
   attachedValue,
   findCommandStarts,
   findHeredocBody,
+  findLineEnd,
   findStdinRedirect,
   hasPrecedingPipe,
+  hasUnclosedQuote,
   hasUnquotedGlob,
   maskHeredocBodies,
   quoteShellArgument,
   readHeredocHeader,
   readLeadingOptions,
   readShellWord,
+  trimEndContinuation,
   type Invocation,
   type ShellWord,
 } from "./shell";
@@ -169,8 +172,7 @@ function findCommitMessageSource(command: string, startIndex: number): CommitMes
 function addSignatureToHeredoc(command: string, signature: string, afterOption: number): string | undefined {
   // The header has to sit on the option's own line; past that newline the
   // heredoc body, or another command, has already begun.
-  const newline = command.indexOf("\n", afterOption);
-  const limit = newline === -1 ? command.length : newline;
+  const limit = findLineEnd(command, afterOption);
 
   for (let index = afterOption; index < limit; index++) {
     const heredoc = readHeredocHeader(command, index);
@@ -351,6 +353,7 @@ export function addSignatureToGitCommitCommand(command: string, signature: strin
   const gitCommitStart = invocation.start;
   const endIndex = findCommandEndIndex(scan, gitCommitStart);
   const commandPart = command.slice(gitCommitStart, endIndex);
+  if (hasUnclosedQuote(scan.slice(gitCommitStart, endIndex))) return command;
   // Past the subcommand: git's own options are not the commit's, and `-C`
   // means a different thing on each side of it.
   const source = findCommitMessageSource(scan.slice(gitCommitStart, endIndex), invocation.end - gitCommitStart);
@@ -358,7 +361,7 @@ export function addSignatureToGitCommitCommand(command: string, signature: strin
 
   if (source.kind === "message") {
     if (hasSignature(commandPart)) return command;
-    const beforeEnd = command.slice(0, endIndex).trimEnd();
+    const beforeEnd = trimEndContinuation(command.slice(0, endIndex));
     const afterCommand = command.slice(endIndex);
     const separator = afterCommand && !/^\s/.test(afterCommand) ? " " : "";
     return `${beforeEnd} -m ${quoteShellArgument(signature)}${separator}${afterCommand}`;

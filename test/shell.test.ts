@@ -8,7 +8,18 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { findInvocation, readShellWord, skipLeadingOptions } from "../src/domain/shell";
+import {
+  findCommandEndIndex,
+  findCommandStarts,
+  findInvocation,
+  findLineEnd,
+  hasUnclosedQuote,
+  readShellWord,
+  rewriteInNestedBackticks,
+  skipQuoted,
+  skipLeadingOptions,
+  trimEndContinuation,
+} from "../src/domain/shell";
 
 /** git's own set: the options before a subcommand that eat the next word. */
 const gitValueOptions = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--attr-source", "--config-env"]);
@@ -119,5 +130,255 @@ describe("findInvocation", () => {
   test("declines when the option list never reaches a subcommand", () => {
     expect(findGitCommit("git -C /r")).toBeUndefined();
     expect(findGitCommit("git -C /r status")).toBeUndefined();
+  });
+});
+
+describe("findCommandEndIndex", () => {
+  test("a backslash-escaped newline continues the command rather than ending it", () => {
+    const command = "gh pr create --title t \\\n  --body hello";
+
+    expect(findCommandEndIndex(command, 0)).toBe(command.length);
+  });
+
+  test("ends a continued command at the pipe that follows it, not at its first line break", () => {
+    const command = "gh pr create \\\n  --body hello | tail -5";
+
+    expect(findCommandEndIndex(command, 0)).toBe(command.indexOf("|"));
+  });
+
+  test("an unescaped newline still ends the command", () => {
+    const command = "gh pr create --title t\necho done";
+
+    expect(findCommandEndIndex(command, 0)).toBe(command.indexOf("\n"));
+  });
+
+  test("an escaped separator does not end the command", () => {
+    const command = "gh pr create --title a\\;b --body hello";
+
+    expect(findCommandEndIndex(command, 0)).toBe(command.length);
+  });
+
+  test("an even run of backslashes leaves the separator free to end the command", () => {
+    const command = "gh pr create --title a\\\\;b --body hello";
+
+    expect(findCommandEndIndex(command, 0)).toBe(command.indexOf(";"));
+  });
+});
+
+describe("readShellWord across a line continuation", () => {
+  test("drops a continuation before the word instead of reading it into the value", () => {
+    expect(readShellWord("\\\n--body", 0)?.value).toBe("--body");
+  });
+
+  test("drops a continuation inside an unquoted word", () => {
+    expect(readShellWord("hel\\\nlo", 0)?.value).toBe("hello");
+  });
+
+  test("drops a continuation inside double quotes", () => {
+    expect(readShellWord('"a\\\nb"', 0)?.value).toBe("ab");
+  });
+
+  test("ends the word at a backtick that opens nothing", () => {
+    expect(readShellWord("hello`", 0)?.value).toBe("hello");
+  });
+
+  test("keeps a continuation literal inside single quotes", () => {
+    expect(readShellWord("'a\\\nb'", 0)?.value).toBe("a\\\nb");
+  });
+
+  test("keeps a backslash that double quotes do not treat as an escape", () => {
+    expect(readShellWord('"C:\\new"', 0)?.value).toBe("C:\\new");
+  });
+
+  test.each([
+    ['"a\\"b"', 'a"b'],
+    ['"a\\\\b"', "a\\b"],
+    ['"a\\$b"', "a$b"],
+    ['"a\\`b"', "a`b"],
+  ])("still unescapes what double quotes do escape: %s", (raw, value) => {
+    expect(readShellWord(raw, 0)?.value).toBe(value);
+  });
+});
+
+describe("findCommandStarts across a line continuation", () => {
+  test("a continuation after an operator is blank space, not the start of a command", () => {
+    const command = "echo a && \\\n  gh pr create";
+
+    expect([...findCommandStarts(command).keys()]).toContain(command.indexOf("gh"));
+    expect(findCommandStarts(command).has(command.indexOf("\\"))).toBe(false);
+  });
+});
+
+describe("quotes and backslashes", () => {
+  test("a single quote closes at the quote even after a backslash, which is literal there", () => {
+    const command = String.raw`git commit -m 'a\'; echo done`;
+
+    expect(findCommandEndIndex(command, 0)).toBe(command.indexOf(";"));
+  });
+
+  test("a double quote after an even run of backslashes is a real quote", () => {
+    const command = String.raw`git commit -m "a\\"; echo done`;
+
+    expect(findCommandEndIndex(command, 0)).toBe(command.indexOf(";"));
+  });
+
+  test("a double quote after an odd run of backslashes stays part of the text", () => {
+    const command = String.raw`git commit -m "a\"; echo"`;
+
+    expect(findCommandEndIndex(command, 0)).toBe(command.length);
+  });
+
+  test("finds the command after a quote that ends in a backslash", () => {
+    const command = String.raw`echo '\' ; gh pr create`;
+
+    expect(findCommandStarts(command).has(command.indexOf("gh"))).toBe(true);
+  });
+});
+
+describe("comments", () => {
+  test("a comment ends at its newline even when its text ends in a backslash", () => {
+    const command = "# note \\\ngh pr create";
+
+    expect(findCommandStarts(command).has(command.indexOf("gh"))).toBe(true);
+  });
+
+  test("nothing after a comment opener starts a command", () => {
+    const command = "echo before # note; gh pr create";
+
+    expect(findCommandStarts(command).has(command.indexOf("gh"))).toBe(false);
+  });
+
+  test("a # after an escaped space belongs to the word", () => {
+    const command = String.raw`git commit -m a\ #b -m c`;
+
+    expect(findCommandEndIndex(command, 0)).toBe(command.length);
+  });
+
+  test("a # inside a word is not a comment", () => {
+    const command = "git commit -m a#b; echo";
+
+    expect(findCommandEndIndex(command, 0)).toBe(command.indexOf(";"));
+  });
+});
+
+describe("trimEndContinuation", () => {
+  test("drops trailing continuations and the blank space around them", () => {
+    expect(trimEndContinuation("gh pr create \\\n  \\\n")).toBe("gh pr create");
+  });
+
+  test("keeps an escaped blank, which belongs to the last word", () => {
+    expect(trimEndContinuation("gh pr create --title t\\ ")).toBe("gh pr create --title t\\ ");
+  });
+
+  test("drops a continuation but not a literal backslash before a newline", () => {
+    expect(trimEndContinuation("echo a\\\\\n")).toBe("echo a\\\\");
+  });
+
+  test("leaves a command that ends in a plain word alone", () => {
+    expect(trimEndContinuation("git commit -m x  ")).toBe("git commit -m x");
+  });
+});
+
+describe("findLineEnd", () => {
+  test("skips a newline that a backslash escapes", () => {
+    const command = "a \\\n b\nc";
+
+    expect(findLineEnd(command, 0)).toBe(command.lastIndexOf("\n"));
+  });
+
+  test("ends at a comment's newline even when the comment ends in a backslash", () => {
+    const command = "git commit -F - # note \\\ncat";
+
+    expect(findLineEnd(command, 0)).toBe(command.indexOf("\n"));
+  });
+
+  test("is the length of the command when no line ends", () => {
+    expect(findLineEnd("a \\\n b", 0)).toBe(6);
+  });
+});
+
+describe("findCommandStarts with an assignment prefix", () => {
+  test("a continuation inside the assignment does not end it", () => {
+    const command = "FOO=val\\\nue gh pr create";
+
+    expect([...findCommandStarts(command).keys()]).toEqual([0, command.indexOf("gh")]);
+  });
+});
+
+describe("hasUnclosedQuote", () => {
+  test.each([
+    [`git commit -m "$(printf '%s' "it's")"`, false],
+    ["git commit -m 'a\\'", false],
+    ['git commit -m "a\\"', true],
+    ["gh pr create --title '", true],
+  ])("%s → %p", (text, unclosed) => {
+    expect(hasUnclosedQuote(text)).toBe(unclosed);
+  });
+});
+
+describe("substitutions inside double quotes", () => {
+  const command = `git commit -m "$(printf '%s' "it's")"; echo done`;
+
+  test("readShellWord carries the substitution whole", () => {
+    expect(readShellWord(command, command.indexOf('"'))?.raw).toBe(`"$(printf '%s' "it's")"`);
+  });
+
+  test("findCommandEndIndex is not thrown off by the quotes inside it", () => {
+    expect(findCommandEndIndex(command, 0)).toBe(command.indexOf(";"));
+  });
+});
+
+describe("rewriteInNestedBackticks", () => {
+  const upper = (text: string) => text.replace("gh", "GH");
+
+  test("rewrites the outer command when the rewrite finds it there", () => {
+    expect(rewriteInNestedBackticks("gh x", upper)).toBe("GH x");
+  });
+
+  test("leaves a backtick body without escaped backticks to the outer rewrite", () => {
+    expect(rewriteInNestedBackticks("echo `true` ok", upper)).toBe("echo `true` ok");
+  });
+
+  // Like the real rewriters, these only see a substitution at their own level.
+  const nested = (text: string) => text.replace("`gh`", "`gh a\\b`");
+
+  test("unescapes, rewrites and re-escapes a nested body, backslashes included", () => {
+    expect(rewriteInNestedBackticks("echo `echo \\`gh\\``", nested)).toBe("echo `echo \\`gh a\\\\b\\``");
+  });
+
+  test("does not look inside single quotes", () => {
+    const command = "echo 'a `b \\`gh\\``'";
+
+    expect(rewriteInNestedBackticks(command, nested)).toBe(command);
+  });
+});
+
+describe("skipQuoted", () => {
+  test.each([
+    ["'a\\'b", 4],
+    ["$'a\\'b' c", 7],
+    ['"a\\"b" c', 6],
+    [`"$(printf '%s' "it's")" c`, 23],
+  ])("%s closes at %p", (text, end) => {
+    expect(skipQuoted(text, 0)).toBe(end);
+  });
+
+  test.each(["'abc", "$'a\\'", '"a\\"'])("%s never closes", (text) => {
+    expect(skipQuoted(text, 0)).toBe(-1);
+  });
+
+  test("opens nothing at an escaped quote or plain text", () => {
+    expect(skipQuoted("\\'a", 1)).toBeUndefined();
+    expect(skipQuoted("abc", 0)).toBeUndefined();
+  });
+
+  test("reports each substitution inside double quotes", () => {
+    const found: [number, number][] = [];
+    skipQuoted('"a $(b) `c`"', 0, (start, end) => found.push([start, end]));
+
+    expect(found).toEqual([
+      [3, 7],
+      [8, 11],
+    ]);
   });
 });
