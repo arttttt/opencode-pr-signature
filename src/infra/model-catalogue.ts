@@ -15,7 +15,7 @@ const MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
  * Bumped manually at release. Kept as a local constant: importing
  * ../package.json would leave src/ for a version string.
  */
-const PLUGIN_VERSION = "1.2.0";
+const PLUGIN_VERSION = "1.2.1";
 
 export type FetchImpl = (input: string, init: RequestInit) => Promise<Response>;
 
