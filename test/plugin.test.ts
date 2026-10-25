@@ -47,6 +47,10 @@ function run(directory: string, command: string): string {
   return execFileSync("/bin/sh", ["-c", command], { cwd: directory, encoding: "utf8" });
 }
 
+// For commands whose own syntax POSIX sh lacks ($'…', $"…", <<<): the user's
+// shell already supports it, but dash, Debian's and Ubuntu's /bin/sh, does not.
+const bash = "/bin/bash";
+
 function createRepository(): string {
   const directory = mkdtempSync(join(tmpdir(), "opencode-pr-signature-"));
   directories.push(directory);
@@ -63,10 +67,12 @@ function commitMessage(directory: string): string {
 /**
  * Run a gh command against a stub `gh` that reports the --body it was handed,
  * so the generated shell is verified by execution without the real CLI.
+ * `shell` is /bin/sh unless the command's own syntax needs more (see `bash`).
  */
 async function runGh(
   command: string,
   files: Record<string, string> = {},
+  shell = "/bin/sh",
 ): Promise<{ body: string | undefined; directory: string }> {
   const directory = mkdtempSync(join(tmpdir(), "opencode-pr-signature-gh-"));
   directories.push(directory);
@@ -82,7 +88,7 @@ async function runGh(
   chmodSync(join(bin, "gh"), 0o755);
   for (const [name, content] of Object.entries(files)) writeFileSync(join(directory, name), content);
 
-  execFileSync("/bin/sh", ["-c", command], {
+  execFileSync(shell, ["-c", command], {
     cwd: directory,
     encoding: "utf8",
     env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
@@ -378,7 +384,7 @@ describe("git commit -F- fed by a redirect", () => {
     const directory = createRepository();
     const rewritten = await sign('git commit -F- <<< "subject $NAME"');
 
-    execFileSync("/bin/bash", ["-c", rewritten], { cwd: directory, env: { ...process.env, NAME: "World" } });
+    execFileSync(bash, ["-c", rewritten], { cwd: directory, env: { ...process.env, NAME: "World" } });
 
     expect(commitMessage(directory)).toBe(`subject World\n\n${signature}\n\n`);
   });
@@ -1050,7 +1056,7 @@ describe("ANSI-C quoting", () => {
   // bash reads $"…" as "…" translated, zsh as a literal $ before "…": the
   // word is the same either way, and its $ hands the body to the shell.
   test("hands a $\"…\" body to the shell to expand rather than reading it", async () => {
-    const { body } = await runGh(await sign('gh pr create --body $"a b"'));
+    const { body } = await runGh(await sign('gh pr create --body $"a b"'), {}, bash);
 
     expect(body).toBe(`a b\n\n${signature}`);
   });
@@ -1070,10 +1076,15 @@ describe("rewritten tricky commands, run for real", () => {
     ["a body continued across lines", "gh pr create \\\n  --title t \\\n  --body hello", "hello"],
     ["a command after a continued &&", "true && \\\n  gh pr create --body hello", "hello"],
     ["a body in escaped backticks nested in backticks", "echo `echo \\`gh pr create --body hello\\``", "hello"],
-    ["an ANSI-C quoted body", "gh pr create --body $'a\\'b'", "a'b"],
     ["a body next to a substitution quoting on its own", `gh pr create --title "$(printf '%s' "it's")" --body hello`, "hello"],
   ])("gh receives the signed body: %s", async (_, command, body) => {
     expect((await runGh(await sign(command))).body).toBe(`${body}\n\n${signature}`);
+  });
+
+  test("gh receives the signed body: an ANSI-C quoted body", async () => {
+    const { body } = await runGh(await sign("gh pr create --body $'a\\'b'"), {}, bash);
+
+    expect(body).toBe(`a'b\n\n${signature}`);
   });
 
   test("gh receives the signed dynamic body from escaped backticks nested in backticks", async () => {
