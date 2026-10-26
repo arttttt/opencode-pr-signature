@@ -127,6 +127,11 @@ The body is signed whether it is written out — `--body x`, `--body=x`, `-b x`,
 `--body "$(cat msg.md)"`. A body read from a file with `--body-file` is not
 signed; see below.
 
+A command line may carry several of these — `git commit -m a && git commit -m b`,
+a commit and a PR, two `gh` calls in a pipeline or a subshell: each one is
+signed on its own terms, and one that is already signed or not ours to sign
+does not stop the rest.
+
 ### Model Names
 
 Model names are not hardcoded. The plugin fetches [OpenRouter's public model

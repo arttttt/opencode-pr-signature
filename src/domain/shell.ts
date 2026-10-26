@@ -547,8 +547,9 @@ export type Invocation = {
 };
 
 /**
- * Find the first invocation of a program that is actually being run, skipping
- * the occurrences that sit inside another command's arguments.
+ * Find an invocation of a program that is actually being run, skipping the
+ * occurrences that sit inside another command's arguments: the first one, or
+ * with `occurrence` the one that many matches further on, in source order.
  *
  * The subcommand is looked for past the program's own options rather than
  * immediately after its name, so `git -C path commit` and `git commit` are
@@ -564,21 +565,49 @@ export function findInvocation(
   program: string,
   takesSeparatedValue: TakesSeparatedValue,
   readSubcommand: (command: string, index: number) => number | undefined,
+  occurrence = 0,
 ): Invocation | undefined {
   // Command substitution nests its own starts in ahead of the outer command,
   // so insertion order is not source order; the first invocation is.
   const starts = [...findCommandStarts(command).keys()].sort((a, b) => a - b);
 
+  let skipped = 0;
   for (const start of starts) {
     const word = readShellWord(command, start);
     if (!word || word.value.toLowerCase() !== program) continue;
 
     const optionsEnd = skipLeadingOptions(command, word.end, takesSeparatedValue);
     const end = readSubcommand(command, optionsEnd);
-    if (end !== undefined) return { start, optionsStart: word.end, optionsEnd, end };
+    if (end === undefined) continue;
+    if (skipped++ === occurrence) return { start, optionsStart: word.end, optionsEnd, end };
   }
 
   return undefined;
+}
+
+/**
+ * Apply `sign` to every invocation of a program on a line, in source order.
+ *
+ * `sign` gets the line as it stands, its masked copy and one invocation, and
+ * returns the line with that invocation signed or left alone. Signing adds no
+ * invocation of the same program — a signature is quoted text, and a signing
+ * stage runs other commands — so the n-th invocation stays the n-th, and the
+ * line's own command starts bound how many there can be.
+ */
+export function signEveryInvocation(
+  command: string,
+  find: (scan: string, occurrence: number) => Invocation | undefined,
+  sign: (command: string, scan: string, invocation: Invocation) => string,
+): string {
+  const limit = findCommandStarts(maskHeredocBodies(command)).size;
+  let signed = command;
+  for (let occurrence = 0; occurrence < limit; occurrence++) {
+    const scan = maskHeredocBodies(signed);
+    const invocation = find(scan, occurrence);
+    if (!invocation) break;
+    signed = sign(signed, scan, invocation);
+  }
+  return signed;
 }
 
 /**

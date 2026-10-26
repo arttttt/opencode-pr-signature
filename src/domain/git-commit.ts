@@ -15,11 +15,11 @@ import {
   hasPrecedingPipe,
   hasUnclosedQuote,
   hasUnquotedGlob,
-  maskHeredocBodies,
   quoteShellArgument,
   readHeredocHeader,
   readLeadingOptions,
   readShellWord,
+  signEveryInvocation,
   trimEndContinuation,
   type Invocation,
   type ShellWord,
@@ -342,14 +342,23 @@ function applySigningStage(
  * is edited in place. A message that only exists once the command runs gets a
  * signing stage piped in front of it. A command whose message this plugin
  * cannot reach at all is returned exactly as the user wrote it.
+ *
+ * Every git commit on the line is signed, each on its own terms.
  */
 export function addSignatureToGitCommitCommand(command: string, signature: string): string {
-  // Scan the masked copy so message text is never read as shell syntax, and
-  // slice the original so the message is never altered by scanning.
-  const scan = maskHeredocBodies(command);
-  const invocation = findInvocation(scan, "git", gitTakesSeparatedValue, readCommitSubcommand);
-  if (!invocation) return command;
+  return signEveryInvocation(
+    command,
+    (scan, occurrence) => findInvocation(scan, "git", gitTakesSeparatedValue, readCommitSubcommand, occurrence),
+    (line, scan, invocation) => signGitCommit(line, scan, invocation, signature),
+  );
+}
 
+/**
+ * Sign one git commit. `scan` is `command` with its heredoc bodies masked:
+ * scanned so message text is never read as shell syntax, while `command` is
+ * sliced so the message is never altered by scanning.
+ */
+function signGitCommit(command: string, scan: string, invocation: Invocation, signature: string): string {
   const gitCommitStart = invocation.start;
   const endIndex = findCommandEndIndex(scan, gitCommitStart);
   const commandPart = command.slice(gitCommitStart, endIndex);
