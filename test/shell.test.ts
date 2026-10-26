@@ -109,6 +109,19 @@ describe("findInvocation", () => {
     expect(findGitCommit(command)?.start).toBe(0);
   });
 
+  test("finds a later invocation by its place among the matches, in source order", () => {
+    // `git add` is not a match, so it does not take a place; the substitution's
+    // commit is nested ahead of its outer command but still counted in order.
+    const command = "git commit -m a && git add . && OUT=$(git commit -m b); git -C /r commit -m c";
+    const nth = (occurrence: number) =>
+      findInvocation(command, "git", gitTakesValue, commitSubcommand, occurrence)?.start;
+
+    expect(nth(0)).toBe(0);
+    expect(nth(1)).toBe(command.indexOf("git commit -m b"));
+    expect(nth(2)).toBe(command.indexOf("git -C /r commit"));
+    expect(nth(3)).toBeUndefined();
+  });
+
   test("looks inside a command substitution, where a real commit can run", () => {
     const command = "OUT=$(git -C /r commit -m x)";
     expect(findGitCommit(command)?.start).toBe(command.indexOf("git -C"));
@@ -344,6 +357,14 @@ describe("rewriteInNestedBackticks", () => {
 
   test("unescapes, rewrites and re-escapes a nested body, backslashes included", () => {
     expect(rewriteInNestedBackticks("echo `echo \\`gh\\``", nested)).toBe("echo `echo \\`gh a\\\\b\\``");
+  });
+
+  test("rewrites every nested body on the line, not only the first", () => {
+    const command = "a=`echo \\`gh\\``; b=$(echo `echo \\`gh\\``)";
+
+    expect(rewriteInNestedBackticks(command, nested)).toBe(
+      "a=`echo \\`gh a\\\\b\\``; b=$(echo `echo \\`gh a\\\\b\\``)",
+    );
   });
 
   test("does not look inside single quotes", () => {

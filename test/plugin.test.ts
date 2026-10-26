@@ -972,6 +972,14 @@ describe("commands inside substitutions", () => {
     expect(await sign(command)).toBe(`echo \`echo \\\`gh pr create --body ${body("hello")}\\\`\``);
   });
 
+  test("signs the gh body in each of two escaped-backtick substitutions on a line", async () => {
+    const command = "a=`echo \\`gh pr create --body one\\``; b=`echo \\`gh pr comment 1 --body two\\``";
+
+    expect(await sign(command)).toBe(
+      `a=\`echo \\\`gh pr create --body ${body("one")}\\\`\`; b=\`echo \\\`gh pr comment 1 --body ${body("two")}\\\`\``,
+    );
+  });
+
   test("signs a commit two levels of escaped backticks deep", async () => {
     const command = "echo `echo \\`echo \\\\\\`git commit -m x\\\\\\`\\``";
 
@@ -1154,6 +1162,66 @@ describe("one line carrying both a commit and a pull request", () => {
 
     expect(rewritten).toBe(
       `printf x | git commit -F msg.txt && gh pr create --title t --body 'hello\n\n${signature}'`,
+    );
+  });
+});
+
+describe("one line carrying several commands of the same kind", () => {
+  const signedM = `-m '${signature}'`;
+
+  test.each([
+    ["&&", "git commit -m a && git commit -m b"],
+    [";", "git commit -m a; git commit -m b"],
+    ["||", "git commit -m a || git commit -m b"],
+    ["a newline", "git commit -m a\ngit commit -m b"],
+  ])("signs every commit, separated by %s", async (_separator, command) => {
+    const rewritten = await sign(command);
+
+    expect(rewritten.split(signedM)).toHaveLength(3);
+    expect(rewritten.indexOf("-m a")).toBeLessThan(rewritten.indexOf(signedM));
+    expect(rewritten.lastIndexOf(signedM)).toBeGreaterThan(rewritten.indexOf("-m b"));
+  });
+
+  test("signs every pull request and issue: in a subshell, a pipeline and a substitution", async () => {
+    const command =
+      '(gh pr create --title t --body "one") && gh issue comment 1 --body "two" | cat; echo "$(gh pr review 2 --body "three")"';
+
+    expect(await sign(command)).toBe(
+      `(gh pr create --title t --body 'one\n\n${signature}') && gh issue comment 1 --body 'two\n\n${signature}' | cat; echo "$(gh pr review 2 --body 'three\n\n${signature}')"`,
+    );
+  });
+
+  test("signs the commits that need it and leaves the one already signed", async () => {
+    const command = `git commit -m a ${signedM} && git commit -m b`;
+
+    expect(await sign(command)).toBe(`git commit -m a ${signedM} && git commit -m b ${signedM}`);
+  });
+
+  test("signs a later commit when an earlier one is not ours to sign", async () => {
+    const command = "printf x | git commit -F msg.txt; git commit -m b";
+
+    expect(await sign(command)).toBe(`printf x | git commit -F msg.txt; git commit -m b ${signedM}`);
+  });
+
+  test("two message-file commits, each given a signing stage, both store a signed message", async () => {
+    const directory = createRepository();
+    writeFileSync(join(directory, "one.txt"), "first\n");
+    writeFileSync(join(directory, "two.txt"), "second\n");
+    const rewritten = await sign("git commit -F one.txt && git commit --allow-empty -F two.txt");
+
+    run(directory, rewritten);
+
+    expect(run(directory, "git log -1 --format=%B HEAD~1")).toBe(`first\n\n${signature}\n\n`);
+    expect(commitMessage(directory)).toBe(`second\n\n${signature}\n\n`);
+  });
+
+  test("signs every commit and every pull request on a mixed line", async () => {
+    const rewritten = await sign(
+      'git commit -m a && gh pr create --title t --body "one" && git commit -m b && gh pr comment 1 --body "two"',
+    );
+
+    expect(rewritten).toBe(
+      `git commit -m a ${signedM} && gh pr create --title t --body 'one\n\n${signature}' && git commit -m b ${signedM} && gh pr comment 1 --body 'two\n\n${signature}'`,
     );
   });
 });

@@ -9,10 +9,11 @@ import {
   findCommandEndIndex,
   findInvocation,
   hasUnclosedQuote,
-  maskHeredocBodies,
   quoteShellArgument,
   readShellWord,
+  signEveryInvocation,
   trimEndContinuation,
+  type Invocation,
 } from "./shell";
 
 /** What a gh command has to name, in order, to carry a body we can sign. */
@@ -110,12 +111,19 @@ function findGhBodyOption(command: string): GhBodyOption {
  * at that moment; a command with no body gets the flag added. Returns the
  * command unchanged when the body is not ours to rewrite — read from a file
  * or from standard input, or spelled in a way this cannot take apart safely.
+ *
+ * Every gh invocation on the line is signed, each on its own terms.
  */
 export function addSignatureToGhCommand(command: string, signature: string): string {
-  const scan = maskHeredocBodies(command);
-  const invocation = findInvocation(scan, "gh", ghTakesSeparatedValue, readGhSubcommand);
-  if (!invocation) return command;
+  return signEveryInvocation(
+    command,
+    (scan, occurrence) => findInvocation(scan, "gh", ghTakesSeparatedValue, readGhSubcommand, occurrence),
+    (line, scan, invocation) => signGhInvocation(line, scan, invocation, signature),
+  );
+}
 
+/** Sign one gh invocation; `scan` is `command` with its heredoc bodies masked. */
+function signGhInvocation(command: string, scan: string, invocation: Invocation, signature: string): string {
   const startIndex = invocation.start;
   const endIndex = findCommandEndIndex(scan, startIndex);
 
