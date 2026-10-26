@@ -359,6 +359,14 @@ describe("rewriteInNestedBackticks", () => {
     expect(rewriteInNestedBackticks("echo `echo \\`gh\\``", nested)).toBe("echo `echo \\`gh a\\\\b\\``");
   });
 
+  test("rewrites every nested body on the line, not only the first", () => {
+    const command = "a=`echo \\`gh\\``; b=$(echo `echo \\`gh\\``)";
+
+    expect(rewriteInNestedBackticks(command, nested)).toBe(
+      "a=`echo \\`gh a\\\\b\\``; b=$(echo `echo \\`gh a\\\\b\\``)",
+    );
+  });
+
   test("does not look inside single quotes", () => {
     const command = "echo 'a `b \\`gh\\``'";
 

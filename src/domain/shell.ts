@@ -782,6 +782,9 @@ export function findLineEnd(command: string, index: number): number {
  * rewritten as a command of its own, and escaped back. Only `\`, `` ` `` and
  * `$` are escapes inside backticks; `\$` and `$` mean the same there, so the
  * round trip changes no meaning.
+ *
+ * Every such body on the line is rewritten, not only the first; one nested in
+ * another is reached through the recursion into its parent.
  */
 export function rewriteInNestedBackticks(command: string, rewrite: (command: string) => string): string {
   const rewritten = rewrite(command);
@@ -789,18 +792,24 @@ export function rewriteInNestedBackticks(command: string, rewrite: (command: str
 
   // Heredoc bodies are text, as they are to every other scan: a quoted one
   // may well spell out a backtick example that nothing runs.
-  for (const { start, end } of collectSubstitutions(maskHeredocBodies(command))) {
-    if (command[start] !== "`") continue;
-    const body = command.slice(start + 1, end - 1);
-    if (!body.includes("\\`")) continue;
+  const bodies = collectSubstitutions(maskHeredocBodies(command)).filter(
+    ({ start, end }) => command[start] === "`" && command.slice(start + 1, end - 1).includes("\\`"),
+  );
+  const outermost = bodies.filter(
+    (inner) => !bodies.some((outer) => outer !== inner && outer.start <= inner.start && inner.end <= outer.end),
+  );
 
+  // Right to left, so a rewritten body never moves one still to come.
+  let result = command;
+  for (const { start, end } of outermost.sort((a, b) => b.start - a.start)) {
+    const body = command.slice(start + 1, end - 1);
     const inner = body.replace(/\\([\\`$])/g, "$1");
     const signed = rewriteInNestedBackticks(inner, rewrite);
     if (signed !== inner) {
-      return command.slice(0, start + 1) + signed.replace(/[\\`]/g, "\\$&") + command.slice(end - 1);
+      result = result.slice(0, start + 1) + signed.replace(/[\\`]/g, "\\$&") + result.slice(end - 1);
     }
   }
-  return command;
+  return result;
 }
 
 /**

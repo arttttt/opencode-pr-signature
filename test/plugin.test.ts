@@ -972,6 +972,14 @@ describe("commands inside substitutions", () => {
     expect(await sign(command)).toBe(`echo \`echo \\\`gh pr create --body ${body("hello")}\\\`\``);
   });
 
+  test("signs the gh body in each of two escaped-backtick substitutions on a line", async () => {
+    const command = "a=`echo \\`gh pr create --body one\\``; b=`echo \\`gh pr comment 1 --body two\\``";
+
+    expect(await sign(command)).toBe(
+      `a=\`echo \\\`gh pr create --body ${body("one")}\\\`\`; b=\`echo \\\`gh pr comment 1 --body ${body("two")}\\\`\``,
+    );
+  });
+
   test("signs a commit two levels of escaped backticks deep", async () => {
     const command = "echo `echo \\`echo \\\\\\`git commit -m x\\\\\\`\\``";
 
